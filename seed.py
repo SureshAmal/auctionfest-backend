@@ -23,10 +23,10 @@ async def seed():
         ]
         session.add_all(teams)
         
-        print("Seeding Plots...")
+        print("Seeding Plots (43 plots from PLANOMICS TOWN PLAN)...")
         plots = [
             Plot(number=i+1, current_bid=None)
-            for i in range(12)
+            for i in range(43)
         ]
         session.add_all(plots)
         
