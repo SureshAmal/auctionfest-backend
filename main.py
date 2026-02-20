@@ -4,16 +4,7 @@ from socket_manager import sio
 import socketio
 from database import init_db
 from routers import auth, admin, data
-from models import * # Load models
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from socket_manager import sio
-import socketio
-from database import init_db
-from routers import auth, admin, data
-from models import * # Load models
-
+from models import *  # Load models
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -25,12 +16,12 @@ async def lifespan(app: FastAPI):
 
 server = FastAPI(title="AU-FEST 2026 Auction", lifespan=lifespan)
 
-# CORS
-origins = ["*"] # Adjust for production
+# CORS 
+# User requested wildcard '*' access
 server.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"], # Allow ALL origins
+    allow_credentials=False, # Credentials (cookies) not supported with wildcard origin
     allow_methods=["*"],
     allow_headers=["*"],
 )

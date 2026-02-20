@@ -32,8 +32,14 @@ class Team(TeamBase, table=True):
 
 class PlotBase(SQLModel):
     number: int = Field(index=True, unique=True)
+    plot_type: str = Field(default="RESIDENTIAL")
+    total_area: int = Field(default=0)
+    actual_area: int = Field(default=0)
+    base_price: int = Field(default=1500)
+    total_plot_price: int = Field(default=0)
     status: PlotStatus = Field(default=PlotStatus.PENDING)
     current_bid: Optional[Decimal] = Field(default=None, decimal_places=2)
+    round_adjustment: Decimal = Field(default=Decimal(0), decimal_places=2)
     
 class Plot(PlotBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
