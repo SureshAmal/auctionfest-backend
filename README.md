@@ -46,7 +46,7 @@ ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 
 ```bash
 # Seed database with sample data
-python seed.py
+uv run seed.py
 ```
 
 ### Running the Server
