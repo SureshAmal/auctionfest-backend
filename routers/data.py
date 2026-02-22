@@ -38,3 +38,26 @@ async def get_connected():
         "teams": get_connected_teams()
     }
 
+@router.get("/bids/recent")
+async def get_recent_bids(session: AsyncSession = Depends(get_session)):
+    """Get the most recent 50 bids for the live feed."""
+    stmt = (
+        select(Bid, Team.name.label("team_name"), Plot.number.label("plot_number"))
+        .join(Team, Bid.team_id == Team.id)
+        .join(Plot, Bid.plot_id == Plot.id)
+        .order_by(Bid.timestamp.desc())
+        .limit(50)
+    )
+    result = await session.exec(stmt)
+    
+    bids_list = []
+    for bid, team_name, plot_number in result:
+        bids_list.append({
+            "amount": float(bid.amount),
+            "team_name": team_name,
+            "plot_number": plot_number,
+            "timestamp": bid.timestamp.isoformat()
+        })
+        
+    return bids_list
+

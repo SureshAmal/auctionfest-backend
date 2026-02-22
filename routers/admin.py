@@ -36,6 +36,7 @@ async def get_current_state(session: AsyncSession = Depends(get_session)):
     return serialize({
         "status": state.status,
         "current_plot_number": state.current_plot_number,
+        "current_round": getattr(state, "current_round", 1),
         "current_plot": current_plot.dict() if current_plot else None
     })
 
@@ -60,6 +61,7 @@ async def start_auction(session: AsyncSession = Depends(get_session)):
     await sio.emit('auction_state_update', serialize({
         'status': state.status,
         'current_plot_number': state.current_plot_number,
+        'current_round': getattr(state, "current_round", 1),
         'current_plot': plot.dict() if plot else None
     }), room='auction_room')
     return {"status": "started"}
@@ -73,7 +75,8 @@ async def pause_auction(session: AsyncSession = Depends(get_session)):
     
     await sio.emit('auction_state_update', serialize({
         'status': state.status,
-        'current_plot_number': state.current_plot_number
+        'current_plot_number': state.current_plot_number,
+        'current_round': getattr(state, "current_round", 1)
     }), room='auction_room')
     return {"status": "paused"}
 
@@ -122,10 +125,90 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
     await sio.emit('auction_state_update', serialize({
         'status': state.status,
         'current_plot_number': state.current_plot_number,
+        'current_round': getattr(state, "current_round", 1),
         'current_plot': next_plot.dict() if next_plot else None
     }), room='auction_room')
     
     return {"status": "advanced", "new_plot": state.current_plot_number}
+
+@router.post("/prev")
+async def prev_plot(session: AsyncSession = Depends(get_session)):
+    state = await get_auction_state(session)
+    
+    # Can't go back from plot 1
+    if state.current_plot_number <= 1:
+        return {"status": "error", "detail": "Already at the first plot"}
+        
+    # Reset current plot to pending
+    current_plot_stmt = select(Plot).where(Plot.number == state.current_plot_number)
+    current_plot_res = await session.exec(current_plot_stmt)
+    current_plot = current_plot_res.first()
+    
+    if current_plot:
+        current_plot.status = PlotStatus.PENDING
+        # Optionally, we could clear its current_bid here, but usually going back implies keeping the bid or resetting it.
+        # We'll keep the bids in the DB, just reset its status so it can be re-bid or just viewed.
+        session.add(current_plot)
+        
+    # Go back to previous plot
+    state.current_plot_number -= 1
+    state.status = AuctionStatus.RUNNING
+    
+    # Get previous plot (the one we are returning to)
+    prev_plot_stmt = select(Plot).where(Plot.number == state.current_plot_number)
+    prev_plot_res = await session.exec(prev_plot_stmt)
+    prev_plot = prev_plot_res.first()
+    
+    if prev_plot:
+        # If it was sold, we need to refund the team
+        if prev_plot.status == PlotStatus.SOLD and prev_plot.winner_team_id and prev_plot.current_bid:
+             team_stmt = select(Team).where(Team.id == prev_plot.winner_team_id)
+             team_res = await session.exec(team_stmt)
+             team = team_res.first()
+             if team:
+                 # Refund the spent amount and decrement plots won
+                 team.spent = max(0, team.spent - prev_plot.current_bid)
+                 team.plots_won = max(0, team.plots_won - 1)
+                 session.add(team)
+                 
+                 # Broadcast the refund to the specific team so their UI updates
+                 await sio.emit('team_update', serialize({
+                     'team_id': team.id,
+                     'spent': float(team.spent),
+                     'budget': float(team.budget)
+                 }), room='auction_room')
+                 
+        # Reactivate the previous plot
+        prev_plot.status = PlotStatus.ACTIVE
+        session.add(prev_plot)
+        
+    session.add(state)
+    await session.commit()
+    
+    await sio.emit('auction_state_update', serialize({
+        'status': state.status,
+        'current_plot_number': state.current_plot_number,
+        'current_round': getattr(state, "current_round", 1),
+        'current_plot': prev_plot.dict() if prev_plot else None
+    }), room='auction_room')
+    
+    return {"status": "reversed", "new_plot": state.current_plot_number}
+
+
+@router.post("/set-round")
+async def set_round(data: dict, session: AsyncSession = Depends(get_session)):
+    round_num = data.get("round", 1)
+    state = await get_auction_state(session)
+    
+    # Store round in state or just emit it
+    # Since we need to persist it, let's update state if it has the column
+    if hasattr(state, "current_round"):
+        state.current_round = round_num
+        session.add(state)
+        await session.commit()
+        
+    await sio.emit('round_change', {'current_round': round_num}, room='auction_room')
+    return {"status": "success", "round": round_num}
 
 @router.post("/reset")
 async def reset_auction(session: AsyncSession = Depends(get_session)):

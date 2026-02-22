@@ -174,6 +174,10 @@ async def place_bid(sid, data):
              await sio.emit('bid_error', {'message': f'Bid must be higher than {current_highest}'}, room=sid)
              return
              
+        if plot.winner_team_id == team.id:
+             await sio.emit('bid_error', {'message': 'You already hold the highest bid!'}, room=sid)
+             return
+             
         if amount > float(team.budget - team.spent):
              await sio.emit('bid_error', {'message': 'Insufficient budget'}, room=sid)
              return

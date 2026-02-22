@@ -13,6 +13,7 @@ class PlotStatus(str, Enum):
 class AuctionStatus(str, Enum):
     NOT_STARTED = "not_started"
     RUNNING = "running"
+    SELLING = "selling"
     PAUSED = "paused"
     COMPLETED = "completed"
     WAITING_FOR_NEXT = "waiting_for_next"
@@ -64,4 +65,5 @@ class AuctionState(SQLModel, table=True):
     id: int = Field(default=1, primary_key=True)
     current_plot_number: int = Field(default=1)
     status: AuctionStatus = Field(default=AuctionStatus.NOT_STARTED)
+    current_round: int = Field(default=1)
     last_updated: datetime = Field(default_factory=datetime.utcnow)
