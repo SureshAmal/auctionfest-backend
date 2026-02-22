@@ -80,6 +80,32 @@ async def pause_auction(session: AsyncSession = Depends(get_session)):
     }), room='auction_room')
     return {"status": "paused"}
 
+@router.post("/sell")
+async def sell_plot(session: AsyncSession = Depends(get_session)):
+    """Initiate the selling countdown for the current plot."""
+    state = await get_auction_state(session)
+    
+    if state.status != AuctionStatus.RUNNING:
+        return {"status": "error", "detail": "Auction must be running to sell."}
+        
+    state.status = AuctionStatus.SELLING
+    session.add(state)
+    await session.commit()
+    
+    # Broadcast selling state so frontends start countdown
+    current_plot_stmt = select(Plot).where(Plot.number == state.current_plot_number)
+    current_plot_res = await session.exec(current_plot_stmt)
+    current_plot = current_plot_res.first()
+    
+    await sio.emit('auction_state_update', serialize({
+        'status': state.status,
+        'current_plot_number': state.current_plot_number,
+        'current_round': getattr(state, "current_round", 1),
+        'current_plot': current_plot.dict() if current_plot else None
+    }), room='auction_room')
+    
+    return {"status": "selling"}
+
 @router.post("/next")
 async def next_plot(session: AsyncSession = Depends(get_session)):
     state = await get_auction_state(session)

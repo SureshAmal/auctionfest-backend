@@ -202,6 +202,7 @@ async def place_bid(sid, data):
         # 6. Broadcast Update
         await sio.emit('new_bid', serialize({
             'amount': amount,
+            'team_id': team.id,
             'team_name': team.name,
             'plot_number': plot.number,
             'timestamp': str(new_bid.timestamp)
