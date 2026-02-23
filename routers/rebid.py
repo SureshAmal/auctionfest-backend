@@ -70,7 +70,7 @@ async def create_offer(data: dict, session: AsyncSession = Depends(get_session))
     await session.commit()
     await session.refresh(new_offer)
     
-    await sio.emit('new_rebid_offer', serialize(new_offer), room='auction_room')
+    await sio.emit('new_rebid_offer', serialize(new_offer.dict()), room='auction_room')
     return {"status": "success", "offer": new_offer}
 
 @router.post("/buy")
@@ -144,11 +144,11 @@ async def buy_offer(data: dict, session: AsyncSession = Depends(get_session)):
     await session.commit()
     
     # Emit updates
-    await sio.emit('rebid_offer_sold', serialize(offer), room='auction_room')
-    await sio.emit('plot_update', serialize(plot), room='auction_room')
+    await sio.emit('rebid_offer_sold', serialize(offer.dict()), room='auction_room')
+    await sio.emit('plot_update', serialize(plot.dict()), room='auction_room')
     
     # Emit team updates
-    await sio.emit('team_update', serialize(buyer), room='auction_room')
-    await sio.emit('team_update', serialize(seller), room='auction_room')
+    await sio.emit('team_update', serialize(buyer.dict()), room='auction_room')
+    await sio.emit('team_update', serialize(seller.dict()), room='auction_room')
     
     return {"status": "success", "message": "Plot purchased successfully!"}

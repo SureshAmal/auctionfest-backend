@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from database import get_session
-from models import AuctionState, AuctionStatus, Plot, PlotStatus, Team, Bid
+from models import AuctionState, AuctionStatus, Plot, PlotStatus, Team, Bid, RebidOffer, AdjustmentHistory
 from socket_manager import sio, serialize
 from pydantic import BaseModel
 import logging
@@ -216,7 +216,7 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
                  }), room='auction_room')
         
         session.add(current_plot)
-        await sio.emit('plot_update', serialize(current_plot), room='auction_room')
+        await sio.emit('plot_update', serialize(current_plot.dict()), room='auction_room')
     
     # Move to next
     state.current_plot_number += 1
@@ -338,20 +338,39 @@ async def toggle_rebid(data: dict, session: AsyncSession = Depends(get_session))
 
 @router.post("/reset")
 async def reset_auction(session: AsyncSession = Depends(get_session)):
-    """HARD RESET"""
-    # 1. Reset State
+    """HARD RESET - Clears all auction data back to initial state."""
+    from sqlmodel import delete
+    
+    # 1. Reset Auction State
     state = await get_auction_state(session)
     state.current_plot_number = 1
     state.status = AuctionStatus.NOT_STARTED
+    state.current_round = 1
+    state.current_question = None
+    state.rebid_phase_active = False
     session.add(state)
     
-    # 2. Delete Bids
-    # Using explicit fetch and delete to ensure ORM consistency
-    from sqlmodel import delete
-    # await session.exec(delete(Bid)) # Potential issue here, switching to execute
+    # 2. Delete all Bids
     await session.execute(delete(Bid))
     
-    # 4. Reset Teams
+    # 3. Delete all Rebid Offers
+    await session.execute(delete(RebidOffer))
+    
+    # 4. Delete all Adjustment History
+    await session.execute(delete(AdjustmentHistory))
+    
+    # 5. Reset all Plots
+    plots_stmt = select(Plot)
+    plots_res = await session.exec(plots_stmt)
+    all_plots = plots_res.all()
+    for p in all_plots:
+        p.status = PlotStatus.PENDING
+        p.current_bid = None
+        p.winner_team_id = None
+        p.round_adjustment = 0
+        session.add(p)
+    
+    # 6. Reset all Teams
     teams_stmt = select(Team)
     teams_res = await session.exec(teams_stmt)
     teams = teams_res.all()
