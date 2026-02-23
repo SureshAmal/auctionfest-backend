@@ -123,7 +123,8 @@ async def join_auction(sid, data):
         await sio.emit('auction_state_update', serialize({
             'status': state.status,
             'current_plot': current_plot.dict() if current_plot else None,
-            'current_plot_number': state.current_plot_number
+            'current_plot_number': state.current_plot_number,
+            'current_question': getattr(state, "current_question", None)
         }), room=sid)
 
 @sio.event

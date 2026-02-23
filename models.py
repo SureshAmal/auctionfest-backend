@@ -21,7 +21,7 @@ class AuctionStatus(str, Enum):
 class TeamBase(SQLModel):
     name: str = Field(index=True, unique=True)
     passcode: str # Simple auth
-    budget: Decimal = Field(default=Decimal(1000000), decimal_places=2) # Example default
+    budget: Decimal = Field(default=Decimal(500000000), decimal_places=2) # 50 Cr default
     spent: Decimal = Field(default=Decimal(0), decimal_places=2)
     plots_won: int = Field(default=0)
 
@@ -61,9 +61,35 @@ class Bid(BidBase, table=True):
     team: Team = Relationship(back_populates="bids")
     plot: Plot = Relationship(back_populates="bids")
 
+class RebidOfferStatus(str, Enum):
+    ACTIVE = "active"
+    SOLD = "sold"
+    CANCELLED = "cancelled"
+
 class AuctionState(SQLModel, table=True):
     id: int = Field(default=1, primary_key=True)
     current_plot_number: int = Field(default=1)
     status: AuctionStatus = Field(default=AuctionStatus.NOT_STARTED)
     current_round: int = Field(default=1)
+    current_question: Optional[str] = Field(default=None)
+    rebid_phase_active: bool = Field(default=False)
     last_updated: datetime = Field(default_factory=datetime.utcnow)
+
+class AdjustmentHistory(SQLModel, table=True):
+    id: Optional[uuid.UUID] = Field(default_factory=uuid.uuid4, primary_key=True)
+    transaction_id: str = Field(index=True)
+    plot_number: int = Field(index=True)
+    old_round_adjustment: Decimal = Field(decimal_places=2)
+    new_round_adjustment: Decimal = Field(decimal_places=2)
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class RebidOfferBase(SQLModel):
+    plot_number: int = Field(index=True)
+    offering_team_id: uuid.UUID = Field(foreign_key="team.id")
+    asking_price: Decimal = Field(decimal_places=2)
+    status: RebidOfferStatus = Field(default=RebidOfferStatus.ACTIVE)
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class RebidOffer(RebidOfferBase, table=True):
+    id: Optional[uuid.UUID] = Field(default_factory=uuid.uuid4, primary_key=True)
+

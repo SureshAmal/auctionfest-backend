@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from socket_manager import sio
 import socketio
 from database import init_db
-from routers import auth, admin, data
+from routers import auth, admin, data, rebid
 from models import *  # Load models
 from contextlib import asynccontextmanager
 
@@ -30,6 +30,7 @@ server.add_middleware(
 server.include_router(auth.router)
 server.include_router(admin.router)
 server.include_router(data.router)
+server.include_router(rebid.router)
 
 # Mount Socket.IO
 app = socketio.ASGIApp(sio, server)

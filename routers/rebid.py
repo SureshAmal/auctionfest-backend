@@ -1,0 +1,154 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlmodel import select
+from decimal import Decimal
+import uuid
+import math
+
+from database import get_session
+from models import Plot, Team, RebidOffer, RebidOfferStatus, AuctionState
+from socket_manager import sio
+from .admin import get_auction_state, serialize # reuse utility function
+
+router = APIRouter(prefix="/api/rebid", tags=["Rebid"])
+
+@router.post("/offer")
+async def create_offer(data: dict, session: AsyncSession = Depends(get_session)):
+    state = await get_auction_state(session)
+    if not state.rebid_phase_active:
+        raise HTTPException(status_code=400, detail="Rebid phase is not active.")
+        
+    team_id_str = data.get("team_id")
+    plot_number = data.get("plot_number")
+    asking_price = data.get("asking_price")
+    
+    if not team_id_str or plot_number is None or asking_price is None:
+        raise HTTPException(status_code=400, detail="Missing team_id, plot_number, or asking_price.")
+        
+    # Get team
+    try:
+        team_stmt = select(Team).where(Team.id == uuid.UUID(team_id_str))
+        team = (await session.exec(team_stmt)).first()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid team_id format.")
+        
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found.")
+        
+    # Get plot
+    plot_stmt = select(Plot).where(Plot.number == plot_number)
+    plot = (await session.exec(plot_stmt)).first()
+    if not plot:
+        raise HTTPException(status_code=404, detail="Plot not found.")
+        
+    if plot.winner_team_id != team.id:
+        raise HTTPException(status_code=403, detail="You do not own this plot.")
+        
+    # Validation: Max markup is 7%
+    current_value = float((plot.current_bid or plot.total_plot_price) + plot.round_adjustment)
+    max_allowed = current_value * 1.07
+    
+    if float(asking_price) > max_allowed:
+        raise HTTPException(status_code=400, detail=f"Asking price exceeds maximum 7% markup (Max: {max_allowed})")
+        
+    # Cancel previous active offers for this plot
+    existing_stmt = select(RebidOffer).where(RebidOffer.plot_number == plot_number).where(RebidOffer.status == RebidOfferStatus.ACTIVE)
+    existing_offers = (await session.exec(existing_stmt)).all()
+    for offer in existing_offers:
+        offer.status = RebidOfferStatus.CANCELLED
+        session.add(offer)
+
+    # Create new offer
+    new_offer = RebidOffer(
+        plot_number=plot.number,
+        offering_team_id=team.id,
+        asking_price=Decimal(asking_price),
+        status=RebidOfferStatus.ACTIVE
+    )
+    
+    session.add(new_offer)
+    await session.commit()
+    await session.refresh(new_offer)
+    
+    await sio.emit('new_rebid_offer', serialize(new_offer), room='auction_room')
+    return {"status": "success", "offer": new_offer}
+
+@router.post("/buy")
+async def buy_offer(data: dict, session: AsyncSession = Depends(get_session)):
+    state = await get_auction_state(session)
+    if not state.rebid_phase_active:
+        raise HTTPException(status_code=400, detail="Rebid phase is not active.")
+        
+    buyer_team_id_str = data.get("team_id")
+    offer_id_str = data.get("offer_id")
+    
+    if not buyer_team_id_str or not offer_id_str:
+        raise HTTPException(status_code=400, detail="Missing team_id or offer_id.")
+        
+    # Get buyer team
+    try:
+        buyer_stmt = select(Team).where(Team.id == uuid.UUID(buyer_team_id_str))
+        buyer = (await session.exec(buyer_stmt)).first()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid team_id format.")
+        
+    if not buyer:
+        raise HTTPException(status_code=404, detail="Buyer team not found.")
+        
+    # Get offer
+    try:
+        offer_stmt = select(RebidOffer).where(RebidOffer.id == uuid.UUID(offer_id_str))
+        offer = (await session.exec(offer_stmt)).first()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid offer_id format.")
+    
+    if not offer or offer.status != RebidOfferStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Offer no longer available.")
+        
+    if offer.offering_team_id == buyer.id:
+        raise HTTPException(status_code=400, detail="You cannot buy your own plot.")
+        
+    buyer_budget = buyer.budget - buyer.spent
+    if buyer_budget < offer.asking_price:
+        raise HTTPException(status_code=400, detail="Insufficient budget.")
+        
+    # Execute trade
+    offer.status = RebidOfferStatus.SOLD
+    
+    # Get plot
+    plot_stmt = select(Plot).where(Plot.number == offer.plot_number)
+    plot = (await session.exec(plot_stmt)).first()
+    
+    # Get seller
+    seller_stmt = select(Team).where(Team.id == offer.offering_team_id)
+    seller = (await session.exec(seller_stmt)).first()
+    
+    # Financial transfer
+    buyer.spent += offer.asking_price
+    buyer.plots_won += 1
+    
+    seller.spent -= offer.asking_price
+    seller.plots_won = max(0, seller.plots_won - 1)
+    
+    # Transfer plot ownership
+    plot.winner_team_id = buyer.id
+    
+    # Establish new baseline value for the new owner based on asking price
+    plot.current_bid = offer.asking_price
+    plot.round_adjustment = Decimal(0)
+    
+    session.add(offer)
+    session.add(buyer)
+    session.add(seller)
+    session.add(plot)
+    await session.commit()
+    
+    # Emit updates
+    await sio.emit('rebid_offer_sold', serialize(offer), room='auction_room')
+    await sio.emit('plot_update', serialize(plot), room='auction_room')
+    
+    # Emit team updates
+    await sio.emit('team_update', serialize(buyer), room='auction_room')
+    await sio.emit('team_update', serialize(seller), room='auction_room')
+    
+    return {"status": "success", "message": "Plot purchased successfully!"}

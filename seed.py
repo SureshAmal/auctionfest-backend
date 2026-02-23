@@ -34,8 +34,8 @@ async def seed():
     async with async_session() as session:
         print("Seeding Teams...")
         teams = [
-            Team(name=f"Team {chr(65+i)}", passcode=f"pass{i}", budget=10000000)
-            for i in range(10)
+            Team(name=f"Team {i+1}", passcode=f"pass{i}", budget=500000000)
+            for i in range(30)
         ]
         session.add_all(teams)
         

@@ -61,3 +61,20 @@ async def get_recent_bids(session: AsyncSession = Depends(get_session)):
         
     return bids_list
 
+from models import RebidOffer, RebidOfferStatus
+
+@router.get("/rebid-offers")
+async def get_active_rebid_offers(session: AsyncSession = Depends(get_session)):
+    stmt = select(RebidOffer).where(RebidOffer.status == RebidOfferStatus.ACTIVE).order_by(RebidOffer.timestamp.desc())
+    results = await session.exec(stmt)
+    return [
+        {
+            "id": str(offer.id),
+            "plot_number": offer.plot_number,
+            "offering_team_id": str(offer.offering_team_id),
+            "asking_price": float(offer.asking_price),
+            "status": offer.status.value,
+            "timestamp": offer.timestamp.isoformat()
+        } for offer in results.all()
+    ]
+

@@ -206,8 +206,17 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
                  team.spent += current_plot.current_bid
                  team.plots_won += 1
                  session.add(team)
+                 
+                 # Broadcast the team update so their UI and Leaderboard updates
+                 await sio.emit('team_update', serialize({
+                     'team_id': team.id,
+                     'spent': float(team.spent),
+                     'budget': float(team.budget),
+                     'plots_won': team.plots_won
+                 }), room='auction_room')
         
         session.add(current_plot)
+        await sio.emit('plot_update', serialize(current_plot), room='auction_room')
     
     # Move to next
     state.current_plot_number += 1
@@ -315,6 +324,18 @@ async def set_round(data: dict, session: AsyncSession = Depends(get_session)):
     await sio.emit('round_change', {'current_round': round_num}, room='auction_room')
     return {"status": "success", "round": round_num}
 
+@router.post("/rebid/toggle")
+async def toggle_rebid(data: dict, session: AsyncSession = Depends(get_session)):
+    is_active = data.get("is_active", False)
+    state = await get_auction_state(session)
+    
+    state.rebid_phase_active = is_active
+    session.add(state)
+    await session.commit()
+    
+    await sio.emit('rebid_phase_update', {'is_active': is_active}, room='auction_room')
+    return {"status": "success", "rebid_phase_active": is_active}
+
 @router.post("/reset")
 async def reset_auction(session: AsyncSession = Depends(get_session)):
     """HARD RESET"""
@@ -330,16 +351,6 @@ async def reset_auction(session: AsyncSession = Depends(get_session)):
     # await session.exec(delete(Bid)) # Potential issue here, switching to execute
     await session.execute(delete(Bid))
     
-    # 3. Reset Plots
-    plots_stmt = select(Plot)
-    plots_res = await session.exec(plots_stmt)
-    plots = plots_res.all()
-    for p in plots:
-        p.status = PlotStatus.PENDING
-        p.current_bid = None
-        p.winner_team_id = None
-        session.add(p)
-        
     # 4. Reset Teams
     teams_stmt = select(Team)
     teams_res = await session.exec(teams_stmt)
@@ -353,3 +364,130 @@ async def reset_auction(session: AsyncSession = Depends(get_session)):
     
     await sio.emit('auction_reset', {}, room='auction_room')
     return {"status": "reset_complete"}
+
+import csv
+CSV_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "planomics-policy-cards.csv")
+
+def read_policy_cards() -> list[dict]:
+    cards = []
+    if os.path.exists(CSV_FILE):
+        with open(CSV_FILE, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                cards.append({
+                    "round_id": int(row.get("round_id", 0)),
+                    "question_id": int(row.get("question_id", 0)),
+                    "policy_description": row.get("policy_description", "").strip()
+                })
+    return cards
+
+@router.get("/questions/{round_id}")
+async def get_questions(round_id: int):
+    all_cards = read_policy_cards()
+    return [c for c in all_cards if c["round_id"] == round_id]
+
+class PushQuestionRequest(BaseModel):
+    policy_description: str
+
+@router.post("/push-question")
+async def push_question(req: PushQuestionRequest, session: AsyncSession = Depends(get_session)):
+    state = await get_auction_state(session)
+    state.current_question = req.policy_description
+    session.add(state)
+    await session.commit()
+    
+    await sio.emit('active_question', {"question": req.policy_description}, room='auction_room')
+    return {"status": "pushed"}
+
+from models import AdjustmentHistory
+from decimal import Decimal
+import uuid
+
+class AdjustPlotRequest(BaseModel):
+    plot_numbers: list[int]
+    adjustment_percent: float
+
+@router.post("/adjust-plot")
+async def adjust_plot(req: AdjustPlotRequest, session: AsyncSession = Depends(get_session)):
+    if not req.plot_numbers:
+        raise HTTPException(status_code=400, detail="No plots provided")
+        
+    plots_stmt = select(Plot).where(Plot.number.in_(req.plot_numbers))
+    plots_res = await session.exec(plots_stmt)
+    plots = plots_res.all()
+    
+    if not plots:
+        raise HTTPException(status_code=404, detail="No matching plots found")
+        
+    transaction_id = str(uuid.uuid4())
+    adjustments = []
+    
+    for plot in plots:
+        base_price_decimal = Decimal(plot.current_bid) if plot.current_bid else Decimal(plot.total_plot_price)
+        adjustment_val = base_price_decimal * Decimal(req.adjustment_percent) / Decimal(100)
+        
+        old_adj = plot.round_adjustment
+        new_adj = old_adj + adjustment_val
+        
+        history = AdjustmentHistory(
+            transaction_id=transaction_id,
+            plot_number=plot.number,
+            old_round_adjustment=old_adj,
+            new_round_adjustment=new_adj
+        )
+        session.add(history)
+        
+        plot.round_adjustment = new_adj
+        session.add(plot)
+        
+        adjustments.append({
+            "plot_number": plot.number,
+            "round_adjustment": float(new_adj)
+        })
+        
+    await session.commit()
+    
+    for adj in adjustments:
+        await sio.emit('plot_adjustment', {"plot_number": adj["plot_number"], "plot": adj}, room='auction_room')
+        
+    return {"status": "success", "transaction_id": transaction_id, "results": adjustments}
+
+@router.post("/undo-adjustment")
+async def undo_adjustment(session: AsyncSession = Depends(get_session)):
+    # Find newest transaction
+    stmt = select(AdjustmentHistory).order_by(AdjustmentHistory.timestamp.desc()).limit(1)
+    res = await session.exec(stmt)
+    latest = res.first()
+    
+    if not latest:
+        return {"status": "error", "message": "No recent adjustments found"}
+        
+    tid = latest.transaction_id
+    
+    hist_stmt = select(AdjustmentHistory).where(AdjustmentHistory.transaction_id == tid)
+    hist_res = await session.exec(hist_stmt)
+    history_records = hist_res.all()
+    
+    reverted_plots = []
+    for record in history_records:
+        plot_stmt = select(Plot).where(Plot.number == record.plot_number)
+        plot_res = await session.exec(plot_stmt)
+        plot = plot_res.first()
+        
+        if plot:
+            plot.round_adjustment = record.old_round_adjustment
+            session.add(plot)
+            reverted_plots.append({
+                "plot_number": plot.number,
+                "round_adjustment": float(plot.round_adjustment)
+            })
+            
+        await session.delete(record)
+        
+    await session.commit()
+    
+    for plot in reverted_plots:
+        await sio.emit('plot_adjustment', {"plot_number": plot["plot_number"], "plot": plot}, room='auction_room')
+        
+    return {"status": "success", "message": f"Reverted transaction {tid}", "reverted_plots": reverted_plots}
+
