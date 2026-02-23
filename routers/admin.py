@@ -4,10 +4,30 @@ from sqlmodel import select
 from database import get_session
 from models import AuctionState, AuctionStatus, Plot, PlotStatus, Team, Bid
 from socket_manager import sio, serialize
+from pydantic import BaseModel
 import logging
+import os
+import asyncio
+from fastapi import BackgroundTasks
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
+
+# Admin password from environment variable, with a secure fallback
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "aufest2026")
+
+
+class AdminLoginRequest(BaseModel):
+    """Request body for admin password verification."""
+    password: str
+
+
+@router.post("/verify")
+async def verify_admin(req: AdminLoginRequest):
+    """Verify the admin password. Returns success or raises 401."""
+    if req.password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    return {"status": "ok", "message": "Admin access granted"}
 
 async def get_auction_state(session: AsyncSession) -> AuctionState:
     """Get or create the auction state singleton."""
@@ -80,8 +100,64 @@ async def pause_auction(session: AsyncSession = Depends(get_session)):
     }), room='auction_room')
     return {"status": "paused"}
 
+async def auto_advance_plot(current_plot_number: int):
+    """Background task to wait 4 seconds and then advance the plot."""
+    await asyncio.sleep(4)
+    # Get a fresh session since the request one is closed
+    from database import engine
+    from sqlalchemy.orm import sessionmaker
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    
+    async with async_session() as session:
+        state = await get_auction_state(session)
+        # Only advance if we are still on the plot we started selling
+        # and the auction wasn't reset/paused in the meantime
+        if state.status == AuctionStatus.SELLING and state.current_plot_number == current_plot_number:
+            # Replicate next_plot logic
+            current_plot_stmt = select(Plot).where(Plot.number == state.current_plot_number)
+            current_plot_res = await session.exec(current_plot_stmt)
+            current_plot = current_plot_res.first()
+            
+            if current_plot:
+                current_plot.status = PlotStatus.SOLD
+                
+                if current_plot.winner_team_id and current_plot.current_bid:
+                     team_stmt = select(Team).where(Team.id == current_plot.winner_team_id)
+                     team_res = await session.exec(team_stmt)
+                     team = team_res.first()
+                     if team:
+                         team.spent += current_plot.current_bid
+                         team.plots_won += 1
+                         session.add(team)
+                
+                session.add(current_plot)
+            
+            # Move to next
+            state.current_plot_number += 1
+            state.status = AuctionStatus.RUNNING
+            
+            next_plot_stmt = select(Plot).where(Plot.number == state.current_plot_number)
+            next_plot_res = await session.exec(next_plot_stmt)
+            next_plot = next_plot_res.first()
+            
+            if next_plot:
+                next_plot.status = PlotStatus.ACTIVE
+                session.add(next_plot)
+            else:
+                state.status = AuctionStatus.COMPLETED
+            
+            session.add(state)
+            await session.commit()
+            
+            await sio.emit('auction_state_update', serialize({
+                'status': state.status,
+                'current_plot_number': state.current_plot_number,
+                'current_round': getattr(state, "current_round", 1),
+                'current_plot': next_plot.dict() if next_plot else None
+            }), room='auction_room')
+
 @router.post("/sell")
-async def sell_plot(session: AsyncSession = Depends(get_session)):
+async def sell_plot(background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     """Initiate the selling countdown for the current plot."""
     state = await get_auction_state(session)
     
@@ -103,6 +179,9 @@ async def sell_plot(session: AsyncSession = Depends(get_session)):
         'current_round': getattr(state, "current_round", 1),
         'current_plot': current_plot.dict() if current_plot else None
     }), room='auction_room')
+    
+    # Schedule auto-advance
+    background_tasks.add_task(auto_advance_plot, state.current_plot_number)
     
     return {"status": "selling"}
 
