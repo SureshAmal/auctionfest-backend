@@ -256,7 +256,8 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
         next_plot_obj.status = PlotStatus.ACTIVE
         session.add(next_plot_obj)
     else:
-        state.status = AuctionStatus.COMPLETED
+        # Round is done — pause. Only admin's /end-game triggers COMPLETED.
+        state.status = AuctionStatus.PAUSED
     
     session.add(state)
     await session.commit()

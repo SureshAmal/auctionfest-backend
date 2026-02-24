@@ -44,7 +44,7 @@ async def create_offer(data: dict, session: AsyncSession = Depends(get_session))
     if plot.winner_team_id != team.id:
         raise HTTPException(status_code=403, detail="You do not own this plot.")
         
-    # Validation: Max markup is 7%
+    # Validation: Max markup is 10% above current adjusted value. No minimum floor.
     current_value = float((plot.current_bid or plot.total_plot_price) + plot.round_adjustment)
     max_allowed = current_value * 1.10
     
@@ -152,3 +152,62 @@ async def buy_offer(data: dict, session: AsyncSession = Depends(get_session)):
     await sio.emit('team_update', serialize(seller.dict()), room='auction_room')
     
     return {"status": "success", "message": "Plot purchased successfully!"}
+
+
+@router.post("/cancel-offer")
+async def cancel_offer(data: dict, session: AsyncSession = Depends(get_session)):
+    """Cancel an active sell offer (unsell). Only allowed during sell phase."""
+    state = await get_auction_state(session)
+    if not state.rebid_phase_active:
+        raise HTTPException(status_code=400, detail="Cannot cancel — sell phase is not active.")
+
+    offer_id_str = data.get("offer_id")
+    team_id_str = data.get("team_id")
+
+    if not offer_id_str or not team_id_str:
+        raise HTTPException(status_code=400, detail="Missing offer_id or team_id.")
+
+    try:
+        offer_stmt = select(RebidOffer).where(RebidOffer.id == uuid.UUID(offer_id_str))
+        offer = (await session.exec(offer_stmt)).first()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid offer_id format.")
+
+    if not offer or offer.status != RebidOfferStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Offer not found or already closed.")
+
+    if str(offer.offering_team_id) != team_id_str:
+        raise HTTPException(status_code=403, detail="You can only cancel your own offers.")
+
+    offer.status = RebidOfferStatus.CANCELLED
+    session.add(offer)
+    await session.commit()
+
+    await sio.emit('rebid_offer_cancelled', serialize(offer.dict()), room='auction_room')
+    return {"status": "success", "message": "Offer cancelled."}
+
+
+@router.get("/offers")
+async def get_offers(session: AsyncSession = Depends(get_session)):
+    """Get all active rebid offers."""
+    stmt = select(RebidOffer).where(RebidOffer.status == RebidOfferStatus.ACTIVE)
+    result = await session.exec(stmt)
+    offers = result.all()
+
+    enriched = []
+    for offer in offers:
+        # Get team name
+        team_stmt = select(Team).where(Team.id == offer.offering_team_id)
+        team = (await session.exec(team_stmt)).first()
+
+        # Get plot info
+        plot_stmt = select(Plot).where(Plot.number == offer.plot_number)
+        plot = (await session.exec(plot_stmt)).first()
+
+        enriched.append({
+            **offer.dict(),
+            "team_name": team.name if team else "Unknown",
+            "plot_value": float((plot.current_bid or plot.total_plot_price or 0) + (plot.round_adjustment or 0)) if plot else 0
+        })
+
+    return serialize(enriched)
