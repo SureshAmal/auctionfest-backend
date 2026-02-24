@@ -74,6 +74,8 @@ class AuctionState(SQLModel, table=True):
     current_round: int = Field(default=1)
     current_question: Optional[str] = Field(default=None)
     rebid_phase_active: bool = Field(default=False)
+    round4_phase: Optional[str] = Field(default=None)  # 'sell' | 'bid' | None
+    round4_bid_queue: Optional[str] = Field(default=None)  # JSON: [plotNum1, plotNum2, ...]
     current_policy_deltas: Optional[str] = Field(default=None)  # JSON: {"plotNum": delta, ...}
     last_updated: datetime = Field(default_factory=datetime.utcnow)
 

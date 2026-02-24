@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from database import get_session
-from models import AuctionState, AuctionStatus, Plot, PlotStatus, Team, Bid, RebidOffer, AdjustmentHistory
+from models import AuctionState, AuctionStatus, Plot, PlotStatus, Team, Bid, RebidOffer, RebidOfferStatus, AdjustmentHistory
 from socket_manager import sio, serialize
 from pydantic import BaseModel
 import logging
@@ -61,7 +61,9 @@ async def get_current_state(session: AsyncSession = Depends(get_session)):
         "current_plot": current_plot.dict() if current_plot else None,
         "current_question": state.current_question,
         "current_policy_deltas": json.loads(state.current_policy_deltas) if state.current_policy_deltas else {},
-        "rebid_phase_active": getattr(state, "rebid_phase_active", False)
+        "rebid_phase_active": getattr(state, "rebid_phase_active", False),
+        "round4_phase": state.round4_phase,
+        "round4_bid_queue": json.loads(state.round4_bid_queue) if state.round4_bid_queue else []
     })
 
 
@@ -191,6 +193,7 @@ async def sell_plot(background_tasks: BackgroundTasks, session: AsyncSession = D
 
 @router.post("/next")
 async def next_plot(session: AsyncSession = Depends(get_session)):
+    """Advance to the next plot. In Round 4 bid phase, follows the bid queue."""
     state = await get_auction_state(session)
     
     # Close current plot
@@ -222,18 +225,36 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
         session.add(current_plot)
         await sio.emit('plot_update', serialize(current_plot.dict()), room='auction_room')
     
-    # Move to next
-    state.current_plot_number += 1
+    # Determine next plot number
+    next_plot_number = None
+
+    if state.round4_phase == "bid" and state.round4_bid_queue:
+        # Round 4 bid phase: advance through the bid queue
+        bid_queue = json.loads(state.round4_bid_queue)
+        try:
+            current_idx = bid_queue.index(state.current_plot_number)
+            if current_idx + 1 < len(bid_queue):
+                next_plot_number = bid_queue[current_idx + 1]
+        except ValueError:
+            # Current plot not in queue; shouldn't happen but handle gracefully
+            pass
+    else:
+        # Normal sequential advancement
+        next_plot_number = state.current_plot_number + 1
+
     state.status = AuctionStatus.RUNNING
     
     # Activate next plot
-    next_plot_stmt = select(Plot).where(Plot.number == state.current_plot_number)
-    next_plot_res = await session.exec(next_plot_stmt)
-    next_plot = next_plot_res.first()
+    next_plot_obj = None
+    if next_plot_number:
+        state.current_plot_number = next_plot_number
+        next_plot_stmt = select(Plot).where(Plot.number == next_plot_number)
+        next_plot_res = await session.exec(next_plot_stmt)
+        next_plot_obj = next_plot_res.first()
     
-    if next_plot:
-        next_plot.status = PlotStatus.ACTIVE
-        session.add(next_plot)
+    if next_plot_obj:
+        next_plot_obj.status = PlotStatus.ACTIVE
+        session.add(next_plot_obj)
     else:
         state.status = AuctionStatus.COMPLETED
     
@@ -244,7 +265,7 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
         'status': state.status,
         'current_plot_number': state.current_plot_number,
         'current_round': getattr(state, "current_round", 1),
-        'current_plot': next_plot.dict() if next_plot else None
+        'current_plot': next_plot_obj.dict() if next_plot_obj else None
     }), room='auction_room')
     
     return {"status": "advanced", "new_plot": state.current_plot_number}
@@ -352,6 +373,8 @@ async def reset_auction(session: AsyncSession = Depends(get_session)):
     state.current_round = 1
     state.current_question = None
     state.current_policy_deltas = None
+    state.round4_phase = None
+    state.round4_bid_queue = None
     state.rebid_phase_active = False
     session.add(state)
     
@@ -531,3 +554,122 @@ async def undo_adjustment(session: AsyncSession = Depends(get_session)):
         
     return {"status": "success", "message": f"Reverted transaction {tid}", "reverted_plots": reverted_plots}
 
+
+@router.post("/start-round4-sell")
+async def start_round4_sell(session: AsyncSession = Depends(get_session)):
+    """Start Round 4 sell phase — teams can list plots for sale."""
+    state = await get_auction_state(session)
+    state.round4_phase = "sell"
+    state.rebid_phase_active = True
+    state.round4_bid_queue = None
+    session.add(state)
+    await session.commit()
+
+    await sio.emit('round4_phase_update', {'phase': 'sell'}, room='auction_room')
+    await sio.emit('rebid_phase_update', {'is_active': True}, room='auction_room')
+    return {"status": "success", "phase": "sell"}
+
+
+@router.post("/start-round4-bidding")
+async def start_round4_bidding(session: AsyncSession = Depends(get_session)):
+    """End sell phase, collect unsold listed plots, and start bidding on them."""
+    state = await get_auction_state(session)
+
+    # Close the sell marketplace
+    state.rebid_phase_active = False
+    state.round4_phase = "bid"
+
+    # Find all ACTIVE (unsold) rebid offers — these go to auction
+    active_stmt = select(RebidOffer).where(RebidOffer.status == RebidOfferStatus.ACTIVE)
+    active_res = await session.exec(active_stmt)
+    unsold_offers = active_res.all()
+
+    # Mark them as cancelled (they'll now be auctioned normally instead)
+    bid_queue = []
+    for offer in unsold_offers:
+        bid_queue.append(offer.plot_number)
+        # Reset the plot so it can be auctioned fresh
+        plot_stmt = select(Plot).where(Plot.number == offer.plot_number)
+        plot_res = await session.exec(plot_stmt)
+        plot = plot_res.first()
+        if plot:
+            # The selling team gets their money back (plot is no longer theirs for bidding)
+            seller_stmt = select(Team).where(Team.id == offer.offering_team_id)
+            seller_res = await session.exec(seller_stmt)
+            seller = seller_res.first()
+            if seller:
+                seller.spent -= plot.current_bid or Decimal(0)
+                seller.plots_won = max(0, seller.plots_won - 1)
+                session.add(seller)
+                await sio.emit('team_update', serialize({
+                    'team_id': seller.id,
+                    'spent': float(seller.spent),
+                    'budget': float(seller.budget),
+                    'plots_won': seller.plots_won
+                }), room='auction_room')
+
+            # Reset plot for fresh auction
+            plot.status = PlotStatus.PENDING
+            plot.current_bid = None
+            plot.winner_team_id = None
+            # Keep round_adjustment — the adjusted value becomes the base
+            session.add(plot)
+
+        offer.status = RebidOfferStatus.CANCELLED
+        session.add(offer)
+
+    # Sort and store the bid queue
+    bid_queue.sort()
+    state.round4_bid_queue = json.dumps(bid_queue)
+
+    if bid_queue:
+        # Set first plot in queue as active
+        state.current_plot_number = bid_queue[0]
+        state.status = AuctionStatus.RUNNING
+
+        first_plot_stmt = select(Plot).where(Plot.number == bid_queue[0])
+        first_plot_res = await session.exec(first_plot_stmt)
+        first_plot = first_plot_res.first()
+        if first_plot:
+            first_plot.status = PlotStatus.ACTIVE
+            session.add(first_plot)
+    else:
+        state.status = AuctionStatus.PAUSED
+
+    session.add(state)
+    await session.commit()
+
+    await sio.emit('round4_phase_update', {'phase': 'bid', 'bid_queue': bid_queue}, room='auction_room')
+
+    # Send state update so everyone sees the new plot
+    current_plot = None
+    if bid_queue:
+        cp_stmt = select(Plot).where(Plot.number == bid_queue[0])
+        cp_res = await session.exec(cp_stmt)
+        current_plot = cp_res.first()
+
+    await sio.emit('auction_state_update', serialize({
+        'status': state.status,
+        'current_plot': current_plot.dict() if current_plot else None,
+        'current_plot_number': state.current_plot_number
+    }), room='auction_room')
+
+    return {"status": "success", "phase": "bid", "bid_queue": bid_queue}
+
+
+@router.post("/end-game")
+async def end_game(session: AsyncSession = Depends(get_session)):
+    """End the game after Round 6 — sets status to completed."""
+    state = await get_auction_state(session)
+    state.status = AuctionStatus.COMPLETED
+    state.round4_phase = None
+    state.rebid_phase_active = False
+    session.add(state)
+    await session.commit()
+
+    await sio.emit('auction_state_update', serialize({
+        'status': 'completed',
+        'current_plot': None,
+        'current_plot_number': state.current_plot_number
+    }), room='auction_room')
+    return {"status": "game_ended"}

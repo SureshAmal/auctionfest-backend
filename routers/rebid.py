@@ -46,10 +46,10 @@ async def create_offer(data: dict, session: AsyncSession = Depends(get_session))
         
     # Validation: Max markup is 7%
     current_value = float((plot.current_bid or plot.total_plot_price) + plot.round_adjustment)
-    max_allowed = current_value * 1.07
+    max_allowed = current_value * 1.10
     
     if float(asking_price) > max_allowed:
-        raise HTTPException(status_code=400, detail=f"Asking price exceeds maximum 7% markup (Max: {max_allowed})")
+        raise HTTPException(status_code=400, detail=f"Asking price exceeds maximum 10% markup (Max: {max_allowed})")
         
     # Cancel previous active offers for this plot
     existing_stmt = select(RebidOffer).where(RebidOffer.plot_number == plot_number).where(RebidOffer.status == RebidOfferStatus.ACTIVE)
