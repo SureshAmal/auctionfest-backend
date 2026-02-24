@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import logging
 import os
 import asyncio
+import json
 from fastapi import BackgroundTasks
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -57,7 +58,10 @@ async def get_current_state(session: AsyncSession = Depends(get_session)):
         "status": state.status,
         "current_plot_number": state.current_plot_number,
         "current_round": getattr(state, "current_round", 1),
-        "current_plot": current_plot.dict() if current_plot else None
+        "current_plot": current_plot.dict() if current_plot else None,
+        "current_question": state.current_question,
+        "current_policy_deltas": json.loads(state.current_policy_deltas) if state.current_policy_deltas else {},
+        "rebid_phase_active": getattr(state, "rebid_phase_active", False)
     })
 
 
@@ -347,6 +351,7 @@ async def reset_auction(session: AsyncSession = Depends(get_session)):
     state.status = AuctionStatus.NOT_STARTED
     state.current_round = 1
     state.current_question = None
+    state.current_policy_deltas = None
     state.rebid_phase_active = False
     session.add(state)
     
@@ -410,8 +415,10 @@ class PushQuestionRequest(BaseModel):
 
 @router.post("/push-question")
 async def push_question(req: PushQuestionRequest, session: AsyncSession = Depends(get_session)):
+    """Push a new policy question and clear previous policy deltas."""
     state = await get_auction_state(session)
     state.current_question = req.policy_description
+    state.current_policy_deltas = None  # Clear deltas for new policy
     session.add(state)
     await session.commit()
     
@@ -461,9 +468,23 @@ async def adjust_plot(req: AdjustPlotRequest, session: AsyncSession = Depends(ge
         
         adjustments.append({
             "plot_number": plot.number,
-            "round_adjustment": float(new_adj)
+            "round_adjustment": float(new_adj),
+            "old_adjustment": float(old_adj)
         })
         
+    await session.commit()
+    
+    # Persist current policy deltas to DB
+    state = await get_auction_state(session)
+    existing_deltas = json.loads(state.current_policy_deltas) if state.current_policy_deltas else {}
+    for adj in adjustments:
+        plot_num_str = str(adj["plot_number"])
+        old_val = float(existing_deltas.get(plot_num_str, 0))
+        # Compute the delta for this plot in this adjustment
+        delta = float(adj["round_adjustment"]) - float(adj.get("old_adjustment", 0))
+        existing_deltas[plot_num_str] = old_val + delta
+    state.current_policy_deltas = json.dumps(existing_deltas)
+    session.add(state)
     await session.commit()
     
     for adj in adjustments:

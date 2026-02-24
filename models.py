@@ -67,12 +67,14 @@ class RebidOfferStatus(str, Enum):
     CANCELLED = "cancelled"
 
 class AuctionState(SQLModel, table=True):
+    """Stores the current state of the auction, including active policy deltas."""
     id: int = Field(default=1, primary_key=True)
     current_plot_number: int = Field(default=1)
     status: AuctionStatus = Field(default=AuctionStatus.NOT_STARTED)
     current_round: int = Field(default=1)
     current_question: Optional[str] = Field(default=None)
     rebid_phase_active: bool = Field(default=False)
+    current_policy_deltas: Optional[str] = Field(default=None)  # JSON: {"plotNum": delta, ...}
     last_updated: datetime = Field(default_factory=datetime.utcnow)
 
 class AdjustmentHistory(SQLModel, table=True):
