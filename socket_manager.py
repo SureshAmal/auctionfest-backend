@@ -144,7 +144,7 @@ async def place_bid(sid, data):
         state_res = await session.exec(state_stmt)
         state = state_res.first()
         
-        if not state or state.status != AuctionStatus.RUNNING:
+        if not state or state.status not in (AuctionStatus.RUNNING, AuctionStatus.SELLING):
             await sio.emit('bid_error', {'message': 'Auction is not running'}, room=sid)
             return
 
@@ -189,6 +189,13 @@ async def place_bid(sid, data):
         plot.winner_team_id = team.id
         session.add(plot)
         
+        # Abort sell countdown if active
+        was_selling = False
+        if state.status == AuctionStatus.SELLING:
+            state.status = AuctionStatus.RUNNING
+            session.add(state)
+            was_selling = True
+        
         # Create Bid Record
         new_bid = Bid(
             amount=Decimal(amount),
@@ -214,4 +221,15 @@ async def place_bid(sid, data):
             'plot': plot.dict(),
             'winner_team': team.name
         }), room='auction_room')
+
+        if was_selling:
+            await sio.emit('auction_state_update', serialize({
+                'status': state.status,
+                'current_plot_number': state.current_plot_number,
+                'current_round': state.current_round,
+                'current_question': getattr(state, "current_question", None),
+                'rebid_phase_active': state.rebid_phase_active,
+                'round4_phase': state.round4_phase,
+                'round4_bid_queue': state.round4_bid_queue
+            }), room='auction_room')
 

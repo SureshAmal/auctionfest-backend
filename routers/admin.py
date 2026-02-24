@@ -107,8 +107,8 @@ async def pause_auction(session: AsyncSession = Depends(get_session)):
     return {"status": "paused"}
 
 async def auto_advance_plot(current_plot_number: int):
-    """Background task to wait 4 seconds and then advance the plot."""
-    await asyncio.sleep(4)
+    """Background task to wait 6 seconds and then advance the plot."""
+    await asyncio.sleep(6)
     # Get a fresh session since the request one is closed
     from database import engine
     from sqlalchemy.orm import sessionmaker
@@ -138,19 +138,36 @@ async def auto_advance_plot(current_plot_number: int):
                 
                 session.add(current_plot)
             
-            # Move to next
-            state.current_plot_number += 1
+            # Determine next plot number
+            next_plot_number = None
+
+            if state.round4_phase == "bid" and state.round4_bid_queue:
+                import json
+                # Round 4 bid phase: advance through the bid queue
+                bid_queue = json.loads(state.round4_bid_queue)
+                try:
+                    current_idx = bid_queue.index(state.current_plot_number)
+                    if current_idx + 1 < len(bid_queue):
+                        next_plot_number = bid_queue[current_idx + 1]
+                except ValueError:
+                    pass
+            else:
+                next_plot_number = state.current_plot_number + 1
+            
             state.status = AuctionStatus.RUNNING
             
-            next_plot_stmt = select(Plot).where(Plot.number == state.current_plot_number)
-            next_plot_res = await session.exec(next_plot_stmt)
-            next_plot = next_plot_res.first()
+            next_plot_obj = None
+            if next_plot_number:
+                state.current_plot_number = next_plot_number
+                next_plot_stmt = select(Plot).where(Plot.number == next_plot_number)
+                next_plot_res = await session.exec(next_plot_stmt)
+                next_plot_obj = next_plot_res.first()
             
-            if next_plot:
-                next_plot.status = PlotStatus.ACTIVE
-                session.add(next_plot)
+            if next_plot_obj:
+                next_plot_obj.status = PlotStatus.ACTIVE
+                session.add(next_plot_obj)
             else:
-                state.status = AuctionStatus.COMPLETED
+                state.status = AuctionStatus.PAUSED
             
             session.add(state)
             await session.commit()
@@ -159,7 +176,7 @@ async def auto_advance_plot(current_plot_number: int):
                 'status': state.status,
                 'current_plot_number': state.current_plot_number,
                 'current_round': getattr(state, "current_round", 1),
-                'current_plot': next_plot.dict() if next_plot else None
+                'current_plot': next_plot_obj.dict() if next_plot_obj else None
             }), room='auction_room')
 
 @router.post("/sell")
@@ -619,7 +636,7 @@ async def start_round4_bidding(session: AsyncSession = Depends(get_session)):
 
             # Clear old bid history so the feed doesn't show Round 1 bids
             from models import Bid
-            bid_stmt = select(Bid).where(Bid.plot_number == plot.number)
+            bid_stmt = select(Bid).where(Bid.plot_id == plot.id)
             old_bids = (await session.exec(bid_stmt)).all()
             for b in old_bids:
                 await session.delete(b)
