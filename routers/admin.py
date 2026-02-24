@@ -609,12 +609,20 @@ async def start_round4_bidding(session: AsyncSession = Depends(get_session)):
                     'plots_won': seller.plots_won
                 }), room='auction_room')
 
-            # Reset plot for fresh auction
+            # Reset plot for fresh auction starting at the asking price
             plot.status = PlotStatus.PENDING
+            plot.total_plot_price = float(offer.asking_price)
+            plot.round_adjustment = 0
             plot.current_bid = None
             plot.winner_team_id = None
-            # Keep round_adjustment — the adjusted value becomes the base
             session.add(plot)
+
+            # Clear old bid history so the feed doesn't show Round 1 bids
+            from models import Bid
+            bid_stmt = select(Bid).where(Bid.plot_number == plot.number)
+            old_bids = (await session.exec(bid_stmt)).all()
+            for b in old_bids:
+                await session.delete(b)
 
         offer.status = RebidOfferStatus.CANCELLED
         session.add(offer)
