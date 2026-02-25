@@ -48,12 +48,11 @@ COPY --from=builder /app/.venv /app/.venv
 # Ensure the venv is on PATH
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Copy the seed CSV data
-COPY "PLANOMIC PLOT DETAILS (2).csv" /app/seed_data/
-ENV SEED_CSV_PATH="/app/seed_data/PLANOMIC PLOT DETAILS (2).csv"
-
-# Copy application source code (respects backend/.dockerignore)
+# Copy application source code (the CSV seed file is inside backend/ now)
 COPY backend/ /app/
+
+# Set seed CSV path (CSV is copied with the backend source above)
+ENV SEED_CSV_PATH="/app/PLANOMIC PLOT DETAILS (2).csv"
 
 # Expose the backend port
 EXPOSE 8000
