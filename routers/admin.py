@@ -63,7 +63,8 @@ async def get_current_state(session: AsyncSession = Depends(get_session)):
         "current_policy_deltas": json.loads(state.current_policy_deltas) if state.current_policy_deltas else {},
         "rebid_phase_active": getattr(state, "rebid_phase_active", False),
         "round4_phase": state.round4_phase,
-        "round4_bid_queue": json.loads(state.round4_bid_queue) if state.round4_bid_queue else []
+        "round4_bid_queue": json.loads(state.round4_bid_queue) if state.round4_bid_queue else [],
+        "theme_config": json.loads(getattr(state, "theme_config", "{}")) if getattr(state, "theme_config", None) else {},
     })
 
 
@@ -708,3 +709,21 @@ async def end_game(session: AsyncSession = Depends(get_session)):
         'current_plot_number': state.current_plot_number
     }), room='auction_room')
     return {"status": "game_ended"}
+
+class ThemeUpdatePayload(BaseModel):
+    variables: dict
+
+@router.post("/theme")
+async def update_theme(payload: ThemeUpdatePayload, session: AsyncSession = Depends(get_session)):
+    """Save the global theme variables and broadcast them to all clients."""
+    state = await get_auction_state(session)
+    
+    # Store theme as JSON string in the database
+    state.theme_config = json.dumps(payload.variables)
+    session.add(state)
+    await session.commit()
+    
+    # Broadcast to all connected clients
+    await sio.emit('theme_update', payload.variables, room='auction_room')
+    
+    return {"status": "success", "message": "Theme updated and broadcasted globally"}

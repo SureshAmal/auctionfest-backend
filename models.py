@@ -77,6 +77,7 @@ class AuctionState(SQLModel, table=True):
     round4_phase: Optional[str] = Field(default=None)  # 'sell' | 'bid' | None
     round4_bid_queue: Optional[str] = Field(default=None)  # JSON: [plotNum1, plotNum2, ...]
     current_policy_deltas: Optional[str] = Field(default=None)  # JSON: {"plotNum": delta, ...}
+    theme_config: Optional[str] = Field(default=None)  # JSON string of CSS variables
     last_updated: datetime = Field(default_factory=datetime.utcnow)
 
 class AdjustmentHistory(SQLModel, table=True):
