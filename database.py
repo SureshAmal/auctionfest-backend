@@ -10,19 +10,20 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    # Fallback for local development if not set, though user should set it
-    # Use sqlite for absolute fallback if postgres not available, but user asked for postgres
     DATABASE_URL = "postgresql+asyncpg://postgres:1475@localhost:5432/auctionfest"
 
-# Handle Supabase/Postgres connection string differences if needed (e.g. sslmode)
-# asyncpg needs postgresql+asyncpg:// scheme
-if DATABASE_URL.startswith("postgresql://"):
+# Handle various schemes provided by cloud hosts like Railway/Render
+# asyncpg REQUIRES postgresql+asyncpg://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Handle SSL for cloud providers like Railway/Render
+# Handle SSL context for cloud providers
 connect_args = {}
-if "ssl" in DATABASE_URL or "sslmode" in DATABASE_URL:
-    # asyncpg uses 'ssl' argument for SSLContext or bool
+# Check for common SSL indicators in the URL
+if any(x in DATABASE_URL.lower() for x in ["ssl", "sslmode", "ssh"]): # Handling 'ssh' typo too
+    # Simple boolean True works for most cloud providers like Railway/Supabase
     connect_args["ssl"] = True
 
 engine = create_async_engine(
@@ -33,6 +34,7 @@ engine = create_async_engine(
     max_overflow=20,
     connect_args=connect_args
 )
+
 
 async def init_db():
     async with engine.begin() as conn:

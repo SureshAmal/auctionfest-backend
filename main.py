@@ -10,8 +10,13 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    await init_db()
+    try:
+        await init_db()
+    except Exception as e:
+        print(f"CRITICAL: Database initialization failed: {e}")
+        print("Continuing to start server, but database features will fail.")
     yield
+
     # Shutdown (if needed)
 
 server = FastAPI(title="AU-FEST 2026 Auction", lifespan=lifespan)
