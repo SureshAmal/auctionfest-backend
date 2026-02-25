@@ -161,8 +161,19 @@ async def auto_advance_plot(current_plot_number: int):
                         next_plot_number = bid_queue[current_idx + 1]
                 except ValueError:
                     pass
-            else:
-                next_plot_number = state.current_plot_number + 1
+
+            if not next_plot_number:
+                # Normal sequential advancement: skip plots that are already won
+                curr = state.current_plot_number
+                while True:
+                    curr += 1
+                    check_stmt = select(Plot).where(Plot.number == curr)
+                    check_plot = (await session.exec(check_stmt)).first()
+                    if not check_plot:
+                        break # We reached the end
+                    if not check_plot.winner_team_id:
+                        next_plot_number = curr
+                        break
             
             state.status = AuctionStatus.RUNNING
             
@@ -313,9 +324,19 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
         except ValueError:
             # Current plot not in queue; shouldn't happen but handle gracefully
             pass
-    else:
-        # Normal sequential advancement
-        next_plot_number = state.current_plot_number + 1
+
+    if not next_plot_number:
+        # Normal sequential advancement: skip plots that are already won by someone
+        curr = state.current_plot_number
+        while True:
+            curr += 1
+            check_stmt = select(Plot).where(Plot.number == curr)
+            check_plot = (await session.exec(check_stmt)).first()
+            if not check_plot:
+                break # We reached the end
+            if not check_plot.winner_team_id:
+                next_plot_number = curr
+                break
 
     state.status = AuctionStatus.RUNNING
     
