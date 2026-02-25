@@ -72,6 +72,11 @@ async def join_auction(sid, data):
     """
     logger.info(f"Client {sid} joining auction: {data}")
     
+    # Check if sid is still connected
+    if sid not in connected_clients:
+        logger.warning(f"Client {sid} disconnected before join_auction completed")
+        return
+    
     # Track who joined
     team_id = data.get('team_id')
     role = data.get('role', 'team')
@@ -102,7 +107,12 @@ async def join_auction(sid, data):
     else:
         connected_clients[sid] = {'role': role, 'team_name': role.capitalize()}
     
-    await sio.enter_room(sid, 'auction_room')
+    try:
+        await sio.enter_room(sid, 'auction_room')
+    except Exception as e:
+        logger.warning(f"Failed to enter room for {sid}: {e}")
+        return
+    
     await broadcast_connection_count()
     
     # Send current state immediately upon join

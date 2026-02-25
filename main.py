@@ -37,5 +37,14 @@ server.include_router(admin.router)
 server.include_router(data.router)
 server.include_router(rebid.router)
 
+# Health check endpoint
+@server.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+@server.get("/")
+async def root():
+    return {"message": "AU-FEST 2026 Auction API"}
+
 # Mount Socket.IO
 app = socketio.ASGIApp(sio, server)
