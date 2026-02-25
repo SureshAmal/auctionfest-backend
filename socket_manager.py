@@ -66,6 +66,13 @@ async def disconnect(sid):
     await broadcast_connection_count()
 
 @sio.event
+async def leave_auction(sid):
+    """Explicitly handle client leaving before socket closes."""
+    logger.info(f"Client leaving explicitly: {sid}")
+    connected_clients.pop(sid, None)
+    await broadcast_connection_count()
+
+@sio.event
 async def join_auction(sid, data):
     """
     Data should contain {'team_id': '...'} or {'role': 'admin'/'spectator'}
