@@ -49,7 +49,7 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy application source code with correct ownership
-COPY --chown=appuser:appuser backend/ /app/
+COPY --chown=appuser:appuser ./ /app/
 
 ENV SEED_CSV_PATH="/app/PLANOMIC PLOT DETAILS (2).csv"
 
