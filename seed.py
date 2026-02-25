@@ -5,8 +5,11 @@ from database import init_db, get_session, engine
 from models import Team, Plot, AuctionState, AuctionStatus, SQLModel
 from sqlmodel import select
 
-# Path to the CSV file
-CSV_FILE = os.path.join(os.path.dirname(__file__), "..", "PLANOMIC PLOT DETAILS (2).csv")
+# Path to the CSV file — supports Docker (SEED_CSV_PATH env) and local dev (relative path)
+CSV_FILE = os.getenv(
+    "SEED_CSV_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "PLANOMIC PLOT DETAILS (2).csv")
+)
 
 def parse_total_price(price_str: str) -> int:
     """Parse total plot price from CSV string format."""

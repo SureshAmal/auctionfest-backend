@@ -1,0 +1,31 @@
+# Virtual environment & caches
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Environment & secrets
+.env
+
+# Local database
+auction.db
+
+# Version control
+.git/
+.gitignore
+
+# Tests (not needed in production image)
+tests/
+
+# IDE & editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+wheels/
