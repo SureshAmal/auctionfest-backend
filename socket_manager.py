@@ -69,13 +69,21 @@ async def join_auction(sid, data):
     Data should contain {'team_id': '...'} or {'role': 'admin'/'spectator'}
     """
     logger.info(f"Client {sid} joining auction: {data}")
-    await sio.enter_room(sid, 'auction_room')
     
     # Track who joined
     team_id = data.get('team_id')
     role = data.get('role', 'team')
     
     if team_id:
+        str_team_id = str(team_id)
+        # Prevent multiple connections for the same team
+        for existing_sid, info in list(connected_clients.items()):
+            if info.get('team_id') == str_team_id and existing_sid != sid:
+                logger.warning(f"Team {team_id} attempted multiple connections from sid {sid}. Existing sid: {existing_sid}")
+                await sio.emit('connection_rejected', {'message': 'Your team is already connected to the live tracker from another device. Please disconnect the other device first.'}, room=sid)
+                await sio.disconnect(sid)
+                return
+
         # Look up team name
         from sqlmodel.ext.asyncio.session import AsyncSession as AS2
         from sqlalchemy.orm import sessionmaker as sm2
@@ -92,6 +100,7 @@ async def join_auction(sid, data):
     else:
         connected_clients[sid] = {'role': role, 'team_name': role.capitalize()}
     
+    await sio.enter_room(sid, 'auction_room')
     await broadcast_connection_count()
     
     # Send current state immediately upon join
