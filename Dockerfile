@@ -48,16 +48,16 @@ COPY --from=builder /app/.venv /app/.venv
 # Ensure the venv is on PATH
 ENV PATH="/app/.venv/bin:$PATH"
 
-
-COPY ./ /app/
-
+# Copy application source code with correct ownership
+COPY --chown=appuser:appuser backend/ /app/
 
 ENV SEED_CSV_PATH="/app/PLANOMIC PLOT DETAILS (2).csv"
 
 # Make the startup script executable
 RUN chmod +x /app/start.sh
 
-# Expose the backend port
+# Railway/Render provides PORT env var
+ENV PORT=8000
 EXPOSE 8000
 
 # Switch to non-root user
@@ -65,8 +65,7 @@ USER appuser
 
 # Health check — hit the admin state endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-8000}/api/admin/state')" || exit 1
+    CMD python -c "import urllib.request, os; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\", 8000)}/api/admin/state')" || exit 1
 
 # Start via entrypoint script (auto-seeds if DB is empty, then starts uvicorn)
 CMD ["bash", "/app/start.sh"]
-
