@@ -54,6 +54,9 @@ COPY ./ /app/
 
 ENV SEED_CSV_PATH="/app/PLANOMIC PLOT DETAILS (2).csv"
 
+# Make the startup script executable
+RUN chmod +x /app/start.sh
+
 # Expose the backend port
 EXPOSE 8000
 
@@ -62,7 +65,8 @@ USER appuser
 
 # Health check — hit the admin state endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/admin/state')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-8000}/api/admin/state')" || exit 1
 
-# Start uvicorn with single worker (required for Socket.IO without Redis)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--log-level", "info"]
+# Start via entrypoint script (auto-seeds if DB is empty, then starts uvicorn)
+CMD ["bash", "/app/start.sh"]
+
