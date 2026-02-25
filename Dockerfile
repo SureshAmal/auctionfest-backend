@@ -15,7 +15,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
 # Copy dependency files first for layer caching
-COPY backend/pyproject.toml backend/uv.lock ./
+COPY pyproject.toml uv.lock ./
 
 # Install production dependencies only (skip dev/test deps)
 RUN uv sync --frozen --no-dev --no-install-project
@@ -48,10 +48,10 @@ COPY --from=builder /app/.venv /app/.venv
 # Ensure the venv is on PATH
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Copy application source code (the CSV seed file is inside backend/ now)
-COPY backend/ /app/
 
-# Set seed CSV path (CSV is copied with the backend source above)
+COPY ./ /app/
+
+
 ENV SEED_CSV_PATH="/app/PLANOMIC PLOT DETAILS (2).csv"
 
 # Expose the backend port
