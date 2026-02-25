@@ -19,12 +19,19 @@ if not DATABASE_URL:
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
+# Handle SSL for cloud providers like Railway/Render
+connect_args = {}
+if "ssl" in DATABASE_URL or "sslmode" in DATABASE_URL:
+    # asyncpg uses 'ssl' argument for SSLContext or bool
+    connect_args["ssl"] = True
+
 engine = create_async_engine(
     DATABASE_URL, 
     echo=False, 
     future=True,
     pool_size=50,
-    max_overflow=20
+    max_overflow=20,
+    connect_args=connect_args
 )
 
 async def init_db():
