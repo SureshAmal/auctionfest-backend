@@ -135,8 +135,16 @@ async def auto_advance_plot(current_plot_number: int):
                          team.spent += current_plot.current_bid
                          team.plots_won += 1
                          session.add(team)
+                         
+                         await sio.emit('team_update', serialize({
+                             'team_id': team.id,
+                             'spent': float(team.spent),
+                             'budget': float(team.budget),
+                             'plots_won': team.plots_won
+                         }), room='auction_room')
                 
                 session.add(current_plot)
+                await sio.emit('plot_update', serialize(current_plot.dict()), room='auction_room')
             
             # Determine next plot number
             next_plot_number = None
@@ -633,6 +641,7 @@ async def start_round4_bidding(session: AsyncSession = Depends(get_session)):
             plot.current_bid = None
             plot.winner_team_id = None
             session.add(plot)
+            await sio.emit('plot_update', serialize(plot.dict()), room='auction_room')
 
             # Clear old bid history so the feed doesn't show Round 1 bids
             from models import Bid
