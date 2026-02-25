@@ -29,8 +29,11 @@ if any(x in DATABASE_URL.lower() for x in ["ssl", "sslmode", "ssh"]):
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     connect_args["ssl"] = ctx
-    print("SSL connection enabled (self-signed allowed) for database.")
-
+    print("SSL Context configured (verification disabled).")
+    
+    # Strip query parameters from URL to prevent driver from overriding our manual connect_args
+    if "?" in DATABASE_URL:
+        DATABASE_URL = DATABASE_URL.split("?")[0]
 
 engine = create_async_engine(
     DATABASE_URL, 
@@ -41,11 +44,8 @@ engine = create_async_engine(
     connect_args=connect_args
 )
 
-
-
 async def init_db():
     async with engine.begin() as conn:
-        # await conn.run_sync(SQLModel.metadata.drop_all) # careful with this
         await conn.run_sync(SQLModel.metadata.create_all)
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

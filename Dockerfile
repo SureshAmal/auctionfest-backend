@@ -42,7 +42,6 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy all files from backend/ into /app
-# (Context is backend/, so ./ is correct)
 COPY --chown=appuser:appuser ./ /app/
 
 # Environment variables
@@ -51,16 +50,11 @@ ENV SEED_CSV_PATH="/app/PLANOMIC PLOT DETAILS (2).csv"
 ENV PORT=8000
 EXPOSE 8000
 
-
 # Make the startup script executable
 RUN chmod +x /app/start.sh
 
 # Switch to non-root user
 USER appuser
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request, os; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\", 8000)}/api/admin/state')" || exit 1
 
 # Start via entrypoint script
 CMD ["bash", "/app/start.sh"]
