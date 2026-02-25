@@ -5,6 +5,7 @@ from database import get_session
 from models import AuctionState, AuctionStatus, Plot, PlotStatus, Team, Bid, RebidOffer, RebidOfferStatus, AdjustmentHistory
 from socket_manager import sio, serialize
 from pydantic import BaseModel
+from decimal import Decimal
 import logging
 import os
 import asyncio
@@ -247,6 +248,54 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
                      'budget': float(team.budget),
                      'plots_won': team.plots_won
                  }), room='auction_room')
+
+             # Round 4 bid phase: credit the original seller with buyer's bid price
+             if state.round4_phase == "bid":
+                 seller_offer_stmt = select(RebidOffer).where(
+                     RebidOffer.plot_number == current_plot.number,
+                     RebidOffer.status == RebidOfferStatus.CANCELLED
+                 ).order_by(RebidOffer.timestamp.desc())
+                 seller_offer_res = await session.exec(seller_offer_stmt)
+                 seller_offer = seller_offer_res.first()
+                 if seller_offer:
+                     seller_stmt = select(Team).where(Team.id == seller_offer.offering_team_id)
+                     seller_res = await session.exec(seller_stmt)
+                     seller = seller_res.first()
+                     if seller:
+                         # Credit seller with the buyer's bid price
+                         seller.spent -= current_plot.current_bid
+                         session.add(seller)
+                         await sio.emit('team_update', serialize({
+                             'team_id': seller.id,
+                             'spent': float(seller.spent),
+                             'budget': float(seller.budget),
+                             'plots_won': seller.plots_won
+                         }), room='auction_room')
+        elif state.round4_phase == "bid" and not current_plot.winner_team_id:
+            # No one bid on this Round 4 plot — return it to original seller
+            seller_offer_stmt = select(RebidOffer).where(
+                RebidOffer.plot_number == current_plot.number,
+                RebidOffer.status == RebidOfferStatus.CANCELLED
+            ).order_by(RebidOffer.timestamp.desc())
+            seller_offer_res = await session.exec(seller_offer_stmt)
+            seller_offer = seller_offer_res.first()
+            if seller_offer:
+                seller_stmt = select(Team).where(Team.id == seller_offer.offering_team_id)
+                seller_res = await session.exec(seller_stmt)
+                seller = seller_res.first()
+                if seller:
+                    # Restore ownership: re-add spent, re-add plots_won
+                    current_plot.winner_team_id = seller_offer.offering_team_id
+                    current_plot.current_bid = float(seller_offer.asking_price)
+                    seller.spent += Decimal(str(seller_offer.asking_price))
+                    seller.plots_won += 1
+                    session.add(seller)
+                    await sio.emit('team_update', serialize({
+                        'team_id': seller.id,
+                        'spent': float(seller.spent),
+                        'budget': float(seller.budget),
+                        'plots_won': seller.plots_won
+                    }), room='auction_room')
         
         session.add(current_plot)
         await sio.emit('plot_update', serialize(current_plot.dict()), room='auction_room')

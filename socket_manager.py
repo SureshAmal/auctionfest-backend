@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 
 sio = socketio.AsyncServer(
     async_mode='asgi',
-    cors_allowed_origins='*' # For development
+    cors_allowed_origins='*', # For development
+    ping_timeout=60,
+    ping_interval=25
 )
 
 # Track connected clients: {sid: {'team_id': ..., 'team_name': ..., 'role': ...}}
