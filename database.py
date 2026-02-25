@@ -12,7 +12,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     DATABASE_URL = "postgresql+asyncpg://postgres:1475@localhost:5432/auctionfest"
 
-# Handle various schemes provided by cloud hosts like Railway/Render
+# Handle schemes provided by cloud hosts like Railway/Render
 # asyncpg REQUIRES postgresql+asyncpg://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
@@ -21,10 +21,16 @@ elif DATABASE_URL.startswith("postgresql://"):
 
 # Handle SSL context for cloud providers
 connect_args = {}
-# Check for common SSL indicators in the URL
-if any(x in DATABASE_URL.lower() for x in ["ssl", "sslmode", "ssh"]): # Handling 'ssh' typo too
-    # Simple boolean True works for most cloud providers like Railway/Supabase
-    connect_args["ssl"] = True
+# Most cloud DBs need SSL. We'll enable it if indicators are present in the URL.
+if any(x in DATABASE_URL.lower() for x in ["ssl", "sslmode", "ssh"]):
+    import ssl
+    # Create a context that doesn't verify the certificate (common requirement for self-signed cloud DBs)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    connect_args["ssl"] = ctx
+    print("SSL connection enabled (self-signed allowed) for database.")
+
 
 engine = create_async_engine(
     DATABASE_URL, 
@@ -34,6 +40,7 @@ engine = create_async_engine(
     max_overflow=20,
     connect_args=connect_args
 )
+
 
 
 async def init_db():
