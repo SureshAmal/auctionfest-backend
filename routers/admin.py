@@ -785,3 +785,25 @@ async def update_theme(payload: ThemeUpdatePayload, session: AsyncSession = Depe
     await sio.emit('theme_update', payload.variables, room='auction_room')
     
     return {"status": "success", "message": "Theme updated and broadcasted globally"}
+
+@router.post("/teams/{team_id}/toggle-ban")
+async def toggle_team_ban(team_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    """Toggle the ban status of a team."""
+    stmt = select(Team).where(Team.id == team_id)
+    res = await session.exec(stmt)
+    team = res.first()
+    
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+        
+    # Toggle the status
+    team.is_banned = not getattr(team, 'is_banned', False)
+    session.add(team)
+    await session.commit()
+    
+    # If we are banning them, we must forcefully kick their active socket
+    if team.is_banned:
+        from socket_manager import kick_banned_team
+        await kick_banned_team(team.id)
+        
+    return {"status": "success", "team_id": team.id, "is_banned": team.is_banned}

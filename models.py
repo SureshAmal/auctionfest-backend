@@ -24,6 +24,7 @@ class TeamBase(SQLModel):
     budget: Decimal = Field(default=Decimal(500000000), decimal_places=2) # 50 Cr default
     spent: Decimal = Field(default=Decimal(0), decimal_places=2)
     plots_won: int = Field(default=0)
+    is_banned: bool = Field(default=False)
 
 class Team(TeamBase, table=True):
     id: Optional[uuid.UUID] = Field(default_factory=uuid.uuid4, primary_key=True)

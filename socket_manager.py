@@ -198,6 +198,10 @@ async def place_bid(sid, data):
             return
 
         # 4. Validate Bid
+        if getattr(team, 'is_banned', False):
+            await sio.emit('bid_error', {'message': 'Your team has been banned and cannot place bids.'}, room=sid)
+            return
+            
         current_highest = float(plot.current_bid) if plot.current_bid else 0
         adjusted_base = float(plot.total_plot_price) + float(plot.round_adjustment)
         min_required = current_highest + 100000 if current_highest > 0 else (adjusted_base or 100000)
@@ -263,4 +267,19 @@ async def place_bid(sid, data):
                 'round4_phase': state.round4_phase,
                 'round4_bid_queue': state.round4_bid_queue
             }), room='auction_room')
+
+async def kick_banned_team(team_id: Any):
+    """Forcefully disconnect all active sockets for a banned team."""
+    str_team_id = str(team_id)
+    to_disconnect = []
+    
+    for sid, info in list(connected_clients.items()):
+        if info.get('team_id') == str_team_id:
+            to_disconnect.append(sid)
+            
+    for sid in to_disconnect:
+        logger.warning(f"Kicking banned team session: {sid}")
+        # Notify the client they are banned so they can redirect/logout
+        await sio.emit('banned', {'message': 'Your team has been banned from the auction.'}, room=sid)
+        await sio.disconnect(sid)
 

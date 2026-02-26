@@ -23,4 +23,7 @@ async def login(creds: LoginRequest, session: AsyncSession = Depends(get_session
     if team.passcode != creds.passcode:
         raise HTTPException(status_code=401, detail="Invalid passcode")
         
+    if getattr(team, 'is_banned', False):
+        raise HTTPException(status_code=403, detail="Your team has been banned from the auction.")
+        
     return team
