@@ -44,10 +44,12 @@ async def create_offer(data: dict, session: AsyncSession = Depends(get_session))
     if plot.winner_team_id != team.id:
         raise HTTPException(status_code=403, detail="You do not own this plot.")
         
-    # Validation: Max markup is 10% above current adjusted value. No minimum floor.
+    # Validation: Price must be between current value and 10% markup
     current_value = float((plot.current_bid or plot.total_plot_price) + plot.round_adjustment)
     max_allowed = current_value * 1.10
     
+    if float(asking_price) < current_value:
+        raise HTTPException(status_code=400, detail=f"Asking price cannot be below current value (Min: {current_value})")
     if float(asking_price) > max_allowed:
         raise HTTPException(status_code=400, detail=f"Asking price exceeds maximum 10% markup (Max: {max_allowed})")
         
