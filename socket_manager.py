@@ -106,6 +106,13 @@ async def join_auction(sid, data):
             team_stmt = select(Team).where(Team.id == team_id)
             team_res = await s2.exec(team_stmt)
             team = team_res.first()
+            
+            if team and getattr(team, 'is_banned', False):
+                logger.warning(f"Banned team {team_id} attempted to join auction.")
+                await sio.emit('banned', {'message': 'Your team has been banned from the auction.'}, room=sid)
+                await sio.disconnect(sid)
+                return
+
             connected_clients[sid] = {
                 'team_id': str(team_id),
                 'team_name': team.name if team else 'Unknown',
