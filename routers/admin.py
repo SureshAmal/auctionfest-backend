@@ -509,26 +509,14 @@ async def reset_auction(session: AsyncSession = Depends(get_session)):
     await sio.emit('auction_reset', {}, room='auction_room')
     return {"status": "reset_complete"}
 
-import csv
-CSV_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "planomics-policy-cards.csv")
-
-def read_policy_cards() -> list[dict]:
-    cards = []
-    if os.path.exists(CSV_FILE):
-        with open(CSV_FILE, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                cards.append({
-                    "round_id": int(row.get("round_id", 0)),
-                    "question_id": int(row.get("question_id", 0)),
-                    "policy_description": row.get("policy_description", "").strip()
-                })
-    return cards
+from models import PolicyCard
 
 @router.get("/questions/{round_id}")
-async def get_questions(round_id: int):
-    all_cards = read_policy_cards()
-    return [c for c in all_cards if c["round_id"] == round_id]
+async def get_questions(round_id: int, session: AsyncSession = Depends(get_session)):
+    stmt = select(PolicyCard).where(PolicyCard.round_id == round_id)
+    res = await session.exec(stmt)
+    cards = res.all()
+    return [{"round_id": c.round_id, "question_id": c.question_id, "policy_description": c.policy_description} for c in cards]
 
 class PushQuestionRequest(BaseModel):
     policy_description: str

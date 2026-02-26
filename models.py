@@ -98,3 +98,10 @@ class RebidOfferBase(SQLModel):
 class RebidOffer(RebidOfferBase, table=True):
     id: Optional[uuid.UUID] = Field(default_factory=uuid.uuid4, primary_key=True)
 
+class PolicyCard(SQLModel, table=True):
+    """Stores the policy cards for rounds 2, 3, 5, 6"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    round_id: int = Field(index=True)
+    question_id: int
+    policy_description: str
+
