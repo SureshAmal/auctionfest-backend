@@ -199,8 +199,11 @@ async def place_bid(sid, data):
 
         # 4. Validate Bid
         current_highest = float(plot.current_bid) if plot.current_bid else 0
-        if amount <= current_highest:
-             await sio.emit('bid_error', {'message': f'Bid must be higher than {current_highest}'}, room=sid)
+        adjusted_base = float(plot.total_plot_price) + float(plot.round_adjustment)
+        min_required = current_highest + 100000 if current_highest > 0 else (adjusted_base or 100000)
+
+        if amount < min_required:
+             await sio.emit('bid_error', {'message': f'Minimum bid is ₹{min_required:,.0f}'}, room=sid)
              return
              
         if plot.winner_team_id == team.id:

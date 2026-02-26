@@ -78,3 +78,26 @@ async def get_active_rebid_offers(session: AsyncSession = Depends(get_session)):
         } for offer in results.all()
     ]
 
+@router.get("/rebid-offers-sold")
+async def get_sold_rebid_offers(session: AsyncSession = Depends(get_session)):
+    """Get all sold rebid offers (with buyer info)."""
+    stmt = select(RebidOffer).where(RebidOffer.status == RebidOfferStatus.SOLD).order_by(RebidOffer.timestamp.desc())
+    results = await session.exec(stmt)
+    offers = []
+    for offer in results.all():
+        # Get offering team name
+        offering_stmt = select(Team).where(Team.id == offer.offering_team_id)
+        offering_res = await session.exec(offering_stmt)
+        offering_team = offering_res.first()
+        
+        offers.append({
+            "id": str(offer.id),
+            "plot_number": offer.plot_number,
+            "offering_team_id": str(offer.offering_team_id),
+            "offering_team_name": offering_team.name if offering_team else "Unknown",
+            "asking_price": float(offer.asking_price),
+            "status": offer.status.value,
+            "timestamp": offer.timestamp.isoformat()
+        })
+    return offers
+

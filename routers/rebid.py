@@ -70,7 +70,11 @@ async def create_offer(data: dict, session: AsyncSession = Depends(get_session))
     await session.commit()
     await session.refresh(new_offer)
     
-    await sio.emit('new_rebid_offer', serialize(new_offer.dict()), room='auction_room')
+    # Include team name in the emitted offer data
+    offer_data = serialize(new_offer.dict())
+    offer_data["team_name"] = team.name
+    
+    await sio.emit('new_rebid_offer', offer_data, room='auction_room')
     return {"status": "success", "offer": new_offer}
 
 @router.post("/buy")
@@ -143,8 +147,13 @@ async def buy_offer(data: dict, session: AsyncSession = Depends(get_session)):
     session.add(plot)
     await session.commit()
     
+    # Include buyer info in the emitted offer data
+    offer_data = serialize(offer.dict())
+    offer_data["buyer_team_id"] = str(buyer.id)
+    offer_data["buyer_name"] = buyer.name
+    
     # Emit updates
-    await sio.emit('rebid_offer_sold', serialize(offer.dict()), room='auction_room')
+    await sio.emit('rebid_offer_sold', offer_data, room='auction_room')
     await sio.emit('plot_update', serialize(plot.dict()), room='auction_room')
     
     # Emit team updates
@@ -182,8 +191,16 @@ async def cancel_offer(data: dict, session: AsyncSession = Depends(get_session))
     offer.status = RebidOfferStatus.CANCELLED
     session.add(offer)
     await session.commit()
-
-    await sio.emit('rebid_offer_cancelled', serialize(offer.dict()), room='auction_room')
+    
+    # Get team name for the emit
+    team_stmt = select(Team).where(Team.id == offer.offering_team_id)
+    team_obj = (await session.exec(team_stmt)).first()
+    team_name = team_obj.name if team_obj else "Unknown"
+    
+    cancelled_data = serialize(offer.dict())
+    cancelled_data["team_name"] = team_name
+    
+    await sio.emit('rebid_offer_cancelled', cancelled_data, room='auction_room')
     return {"status": "success", "message": "Offer cancelled."}
 
 
