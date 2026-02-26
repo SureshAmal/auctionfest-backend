@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 sio = socketio.AsyncServer(
     async_mode='asgi',
     cors_allowed_origins='*', # For development
-    ping_timeout=60,
-    ping_interval=25
+    ping_timeout=20,
+    ping_interval=10
 )
 
 # Track connected clients: {sid: {'team_id': ..., 'team_name': ..., 'role': ...}}
@@ -93,10 +93,12 @@ async def join_auction(sid, data):
         # Prevent multiple connections for the same team
         for existing_sid, info in list(connected_clients.items()):
             if info.get('team_id') == str_team_id and existing_sid != sid:
-                logger.warning(f"Team {team_id} attempted multiple connections from sid {sid}. Existing sid: {existing_sid}")
-                await sio.emit('connection_rejected', {'message': 'Your team is already connected to the live tracker from another device. Please disconnect the other device first.'}, room=sid)
-                await sio.disconnect(sid)
-                return
+                logger.warning(f"Team {team_id} reconnected. Disconnecting old sid: {existing_sid}")
+                await sio.emit('connection_rejected', {'message': 'Connected from another device. This session is now disconnected.'}, room=existing_sid)
+                await sio.disconnect(existing_sid)
+                
+                # Remove old client from tracking explicitly to keep count accurate immediately
+                connected_clients.pop(existing_sid, None)
 
         # Look up team name
         from sqlmodel.ext.asyncio.session import AsyncSession as AS2
