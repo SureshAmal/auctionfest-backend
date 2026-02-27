@@ -46,7 +46,6 @@ COPY --chown=appuser:appuser ./ /app/
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
-ENV SEED_CSV_PATH="/app/PLANOMIC PLOT DETAILS (2).csv"
 EXPOSE 8000
 
 # Make the startup script executable

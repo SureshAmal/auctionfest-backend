@@ -50,10 +50,10 @@ engine = create_async_engine(
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
-        _ensure_enum_values(conn)
+        await _ensure_enum_values(conn)
 
 
-def _ensure_enum_values(conn):
+async def _ensure_enum_values(conn):
     """Ensure all enum values exist in PostgreSQL. Add missing ones."""
     from sqlalchemy import text
     
@@ -65,7 +65,7 @@ def _ensure_enum_values(conn):
     for enum_name, values in enums_to_check:
         for value in values:
             try:
-                conn.execute(
+                await conn.execute(
                     text(f"ALTER TYPE {enum_name} ADD VALUE '{value}'")
                 )
             except Exception:

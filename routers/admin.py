@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import select
+from sqlmodel import select, or_
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database import get_session
@@ -449,6 +449,8 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
     # Determine next plot number
     next_plot_number = None
 
+    is_round4_end = False
+
     if state.round4_phase == "bid" and state.round4_bid_queue:
         # Round 4 bid phase: advance through the bid queue
         bid_queue = json.loads(state.round4_bid_queue)
@@ -456,11 +458,13 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
             current_idx = bid_queue.index(state.current_plot_number)
             if current_idx + 1 < len(bid_queue):
                 next_plot_number = bid_queue[current_idx + 1]
+            else:
+                is_round4_end = True
         except ValueError:
             # Current plot not in queue; shouldn't happen but handle gracefully
             pass
 
-    if not next_plot_number:
+    if not next_plot_number and not is_round4_end:
         # Normal sequential advancement: skip plots that are already won by someone
         curr = state.current_plot_number
         while True:
@@ -614,6 +618,89 @@ async def set_round(data: dict, session: AsyncSession = Depends(get_session)):
         await sio.emit("rebid_phase_update", {"is_active": True}, room="auction_room")
 
     return {"status": "success", "round": round_num}
+
+
+@router.post("/force-resell/{plot_number}")
+async def force_resell(plot_number: int, session: AsyncSession = Depends(get_session)):
+    """Admin tool to force a sold plot into the Round 4 resell pool."""
+    state = await get_auction_state(session)
+    
+    # Needs to be a valid plot
+    plot_stmt = select(Plot).where(Plot.number == plot_number)
+    plot_res = await session.exec(plot_stmt)
+    plot = plot_res.first()
+    
+    if not plot:
+        return {"status": "error", "message": "Plot not found"}
+
+    # If it was sold, we need to refund the team
+    if plot.winner_team_id:
+        team_stmt = select(Team).where(Team.id == plot.winner_team_id)
+        team_res = await session.exec(team_stmt)
+        team = team_res.first()
+        if team:
+            # Refund the spent amount and decrement plots won
+            if plot.current_bid:
+                team.spent = max(0, float(team.spent) - float(plot.current_bid))
+            elif plot.total_plot_price:
+                team.spent = max(0, float(team.spent) - float(plot.total_plot_price))
+            
+            team.plots_won = max(0, team.plots_won - 1)
+            session.add(team)
+
+            # Broadcast the refund to the specific team so their UI updates
+            await sio.emit(
+                "team_update",
+                serialize(
+                    {
+                        "team_id": team.id,
+                        "spent": float(team.spent),
+                        "budget": float(team.budget),
+                        "plots_won": team.plots_won,
+                    }
+                ),
+                room="auction_room",
+            )
+    
+    # Reset plot cleanly
+    plot.status = PlotStatus.UNSOLD
+    plot.winner_team_id = None
+    plot.current_bid = None
+    plot.round_adjustment = 0
+    session.add(plot)
+
+    from models import Bid
+    bid_stmt = select(Bid).where(Bid.plot_id == plot.id)
+    old_bids = (await session.exec(bid_stmt)).all()
+    for b in old_bids:
+        await session.delete(b)
+
+    # Force inject into active Round 4 run if currently in `bid` phase
+    if getattr(state, "current_round", 1) == 4 and getattr(state, "round4_phase", None) == "bid" and getattr(state, "round4_bid_queue", None):
+        bid_queue = json.loads(state.round4_bid_queue)
+        if plot.number not in bid_queue:
+            bid_queue.append(plot.number)
+            bid_queue.sort()
+            state.round4_bid_queue = json.dumps(bid_queue)
+            session.add(state)
+            
+            await sio.emit(
+                "round4_phase_update",
+                {"phase": "bid", "bid_queue": bid_queue},
+                room="auction_room",
+            )
+            
+            # Since it's in the queue, label it pending so it acts normally when next comes around.
+            plot.status = PlotStatus.PENDING
+            session.add(plot)
+
+    await session.commit()
+
+    await sio.emit(
+        "plot_update", serialize(plot.dict()), room="auction_room"
+    )
+
+    return {"status": "success", "message": f"Plot {plot_number} forced to resell queue."}
 
 
 @router.post("/rebid/toggle")
@@ -892,25 +979,29 @@ async def start_round4_bidding(session: AsyncSession = Depends(get_session)):
     active_res = await session.exec(active_stmt)
     unsold_offers = active_res.all()
 
-    # Find all completely unsold plots from Round 1
-    unsold_plots_stmt = select(Plot).where(Plot.winner_team_id == None)
+    # Find all completely unsold plots from Round 1 (no winner OR status is unsold)
+    unsold_plots_stmt = select(Plot).where(
+        or_(Plot.winner_team_id == None, Plot.status == PlotStatus.UNSOLD)
+    )
     unsold_plots_res = await session.exec(unsold_plots_stmt)
     unsold_round1_plots = unsold_plots_res.all()
 
-    bid_queue = []
+    unsold_queue = []
+    rebid_queue = []
 
-    # Add unsold round 1 plots to queue
+    # Add unsold round 1 plots to unsold queue
     for plot in unsold_round1_plots:
-        if plot.number not in bid_queue:
-            bid_queue.append(plot.number)
+        if plot.number not in unsold_queue:
+            unsold_queue.append(plot.number)
             plot.status = PlotStatus.PENDING
+            plot.winner_team_id = None
             plot.current_bid = None
             session.add(plot)
 
-    # Mark rebid offers as cancelled (they'll now be auctioned normally instead)
+    # Mark rebid offers as cancelled and add to rebid queue
     for offer in unsold_offers:
-        if offer.plot_number not in bid_queue:
-            bid_queue.append(offer.plot_number)
+        if offer.plot_number not in unsold_queue and offer.plot_number not in rebid_queue:
+            rebid_queue.append(offer.plot_number)
 
         plot_stmt = select(Plot).where(Plot.number == offer.plot_number)
         plot_res = await session.exec(plot_stmt)
@@ -936,8 +1027,11 @@ async def start_round4_bidding(session: AsyncSession = Depends(get_session)):
         offer.status = RebidOfferStatus.CANCELLED
         session.add(offer)
 
-    # Sort and store the bid queue
-    bid_queue.sort()
+    # Sort queues independently and combine
+    unsold_queue.sort()
+    rebid_queue.sort()
+    bid_queue = unsold_queue + rebid_queue
+    
     state.round4_bid_queue = json.dumps(bid_queue)
 
     if bid_queue:

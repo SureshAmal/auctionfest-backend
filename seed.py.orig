@@ -1457,8 +1457,11 @@ POLICY_CARDS_DATA = [
 
 
 async def seed():
-    """Initialize tables and seed all data (teams, plots, policy cards, auction state)."""
-    print("Ensuring tables exist...")
+    """Drop all tables, recreate schema, and seed all data (teams, plots, policy cards, auction state).
+
+    This is a destructive operation — all existing data will be lost.
+    """
+    print("Resetting database...")
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.drop_all)
         await conn.run_sync(SQLModel.metadata.create_all)
@@ -1508,7 +1511,7 @@ async def seed():
         # --- Auction State ---
         print("Seeding Auction State...")
         state = AuctionState(
-            current_plot_number=1, status=AuctionStatus.NOT_STARTED, admin_forced_theme=False
+            id=1, current_plot_number=1, status=AuctionStatus.NOT_STARTED, admin_forced_theme=False
         )
         session.add(state)
 
