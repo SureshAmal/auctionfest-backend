@@ -321,6 +321,16 @@ async def place_bid(sid, data):
             await sio.emit("bid_error", {"message": "Auction is not running"}, room=sid)
             return
 
+        # Validate plot_number to prevent race condition bids on wrong plot
+        bid_plot_number = data.get("plot_number")
+        if bid_plot_number is not None and int(bid_plot_number) != state.current_plot_number:
+            await sio.emit(
+                "bid_error",
+                {"message": "Plot has changed. Please bid on the current plot."},
+                room=sid,
+            )
+            return
+
         # 2. Get Plot
         plot_stmt = select(Plot).where(Plot.number == state.current_plot_number)
         plot_res = await session.exec(plot_stmt)
@@ -479,3 +489,30 @@ async def kick_banned_team(team_id: Any):
         )
         await sio.disconnect(sid)
         await broadcast_connection_count()
+
+
+async def force_disconnect_team(team_id: Any) -> bool:
+    """Forcefully disconnect a team's active socket without banning them.
+
+    Args:
+        team_id: The team ID to disconnect.
+
+    Returns:
+        True if the team was connected and disconnected, False otherwise.
+    """
+    str_team_id = str(team_id)
+
+    info = _team_presence.pop(str_team_id, None)
+    if info:
+        sid = info["sid"]
+        _sid_to_team.pop(sid, None)
+        logger.warning(f"Admin force-disconnecting team session: {sid}")
+        await sio.emit(
+            "connection_rejected",
+            {"message": "You have been disconnected by the admin."},
+            room=sid,
+        )
+        await sio.disconnect(sid)
+        await broadcast_connection_count()
+        return True
+    return False

@@ -131,3 +131,12 @@ class PolicyCard(SQLModel, table=True):
     round_id: int = Field(index=True)
     question_id: int
     policy_description: str
+
+
+class GameSnapshot(SQLModel, table=True):
+    """Stores a full snapshot of the game state for save/restore functionality."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    label: str = Field(default="")
+    snapshot_data: str = Field(default="{}")  # JSON blob of all game data
+    created_at: datetime = Field(default_factory=datetime.utcnow)

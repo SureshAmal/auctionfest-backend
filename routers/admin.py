@@ -15,6 +15,7 @@ from models import (
     AuctionState,
     AuctionStatus,
     Bid,
+    GameSnapshot,
     Plot,
     PlotStatus,
     RebidOffer,
@@ -146,10 +147,90 @@ async def pause_auction(session: AsyncSession = Depends(get_session)):
     )
     return {"status": "paused"}
 
+async def auto_save_game_state(session: AsyncSession, label: str):
+    """Automatically save a game snapshot with the given label."""
+    import json
+    
+    state = await get_auction_state(session)
+    teams = (await session.exec(select(Team))).all()
+    plots = (await session.exec(select(Plot))).all()
+    bids = (await session.exec(select(Bid))).all()
+    offers = (await session.exec(select(RebidOffer))).all()
+
+    snapshot = {
+        "auction_state": {
+            "current_plot_number": state.current_plot_number,
+            "status": state.status,
+            "current_round": state.current_round,
+            "current_question": state.current_question,
+            "rebid_phase_active": state.rebid_phase_active,
+            "round4_phase": state.round4_phase,
+            "round4_bid_queue": state.round4_bid_queue,
+            "current_policy_deltas": state.current_policy_deltas,
+        },
+        "teams": [
+            {
+                "id": str(t.id),
+                "name": t.name,
+                "passcode": t.passcode,
+                "budget": float(t.budget),
+                "spent": float(t.spent),
+                "plots_won": t.plots_won,
+                "is_banned": t.is_banned,
+            }
+            for t in teams
+        ],
+        "plots": [
+            {
+                "id": p.id,
+                "number": p.number,
+                "plot_type": p.plot_type,
+                "total_area": p.total_area,
+                "actual_area": p.actual_area,
+                "base_price": p.base_price,
+                "total_plot_price": p.total_plot_price,
+                "status": p.status,
+                "current_bid": float(p.current_bid) if p.current_bid else None,
+                "round_adjustment": float(p.round_adjustment),
+                "purchase_price": float(p.purchase_price) if p.purchase_price else None,
+                "winner_team_id": str(p.winner_team_id) if p.winner_team_id else None,
+            }
+            for p in plots
+        ],
+        "bids": [
+            {
+                "id": str(b.id),
+                "amount": float(b.amount),
+                "team_id": str(b.team_id),
+                "plot_id": b.plot_id,
+                "timestamp": b.timestamp.isoformat(),
+            }
+            for b in bids
+        ],
+        "rebid_offers": [
+            {
+                "id": str(o.id),
+                "plot_number": o.plot_number,
+                "offering_team_id": str(o.offering_team_id),
+                "asking_price": float(o.asking_price),
+                "status": o.status,
+                "timestamp": o.timestamp.isoformat(),
+            }
+            for o in offers
+        ],
+    }
+
+    game_snapshot = GameSnapshot(
+        label=label,
+        snapshot_data=json.dumps(snapshot),
+    )
+    session.add(game_snapshot)
+    await session.commit()
+    return game_snapshot
 
 async def auto_advance_plot(current_plot_number: int):
     """Background task to wait 6 seconds and then advance the plot."""
-    await asyncio.sleep(6)
+    await asyncio.sleep(5)
     # Get a fresh session since the request one is closed
     from sqlalchemy.orm import sessionmaker
 
@@ -198,7 +279,9 @@ async def auto_advance_plot(current_plot_number: int):
 
                 if is_unsold_rebid:
                     # Nobody outbid the seller. They keep their plot.
-                    pass
+                    # Revert the current_bid back to what it was before the round started!
+                    if current_plot.purchase_price is not None:
+                        current_plot.current_bid = current_plot.purchase_price
                 elif current_plot.winner_team_id and current_plot.current_bid:
                     team_stmt = select(Team).where(
                         Team.id == current_plot.winner_team_id
@@ -257,6 +340,19 @@ async def auto_advance_plot(current_plot_number: int):
                 await sio.emit(
                     "plot_update", serialize(current_plot.dict()), room="auction_room"
                 )
+                
+                if current_plot.status == PlotStatus.SOLD:
+                    await sio.emit("plot_sold_summary", {
+                        "plotNumber": current_plot.number,
+                        "teamId": str(current_plot.winner_team_id) if current_plot.winner_team_id else None,
+                        "price": float(current_plot.current_bid or current_plot.total_plot_price)
+                    }, room="auction_room")
+
+            # Perform Auto-Save
+            label = f"Round {state.current_round} - Plot {current_plot.number} Sold"
+            if current_plot.status == PlotStatus.UNSOLD:
+                label = f"Round {state.current_round} - Plot {current_plot.number} Unsold"
+            await auto_save_game_state(session, label)
 
             # Determine next plot number
             next_plot_number = None
@@ -390,7 +486,9 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
 
         if is_unsold_rebid:
             # Nobody outbid the seller. They keep their plot.
-            pass
+            # Revert the current_bid back to its original true value
+            if current_plot.purchase_price is not None:
+                current_plot.current_bid = current_plot.purchase_price
         elif current_plot.winner_team_id and current_plot.current_bid:
             team_stmt = select(Team).where(Team.id == current_plot.winner_team_id)
             team = (await session.exec(team_stmt)).first()
@@ -445,6 +543,21 @@ async def next_plot(session: AsyncSession = Depends(get_session)):
         await sio.emit(
             "plot_update", serialize(current_plot.dict()), room="auction_room"
         )
+        
+        if current_plot.status == PlotStatus.SOLD:
+            await sio.emit("plot_sold_summary", {
+                "plotNumber": current_plot.number,
+                "teamId": str(current_plot.winner_team_id) if current_plot.winner_team_id else None,
+                "price": float(current_plot.current_bid or current_plot.total_plot_price)
+            }, room="auction_room")
+
+        # Perform Auto-Save for explicit 'Next' action
+        label = f"Round {state.current_round} - Plot {current_plot.number} Sold"
+        if current_plot.status == PlotStatus.UNSOLD:
+            label = f"Round {state.current_round} - Plot {current_plot.number} Unsold"
+        # Append 'Manual' to easily distinguish it
+        label += " (Manual Advance)"
+        await auto_save_game_state(session, label)
 
     # Determine next plot number
     next_plot_number = None
@@ -667,6 +780,9 @@ async def force_resell(plot_number: int, session: AsyncSession = Depends(get_ses
     plot.winner_team_id = None
     plot.current_bid = None
     plot.round_adjustment = 0
+    plot.purchase_price = None
+    if plot.base_price and plot.actual_area:
+        plot.total_plot_price = float(plot.base_price * plot.actual_area)
     session.add(plot)
 
     from models import Bid
@@ -891,6 +1007,25 @@ async def adjust_plot(
             room="auction_room",
         )
 
+    label = f"Round {state.current_round} - Adjustment Applied"
+    if state.current_question:
+        # Find the matching PolicyCard to use P1, P2 format
+        from models import PolicyCard
+        card_stmt = select(PolicyCard).where(
+            PolicyCard.round_id == state.current_round,
+            PolicyCard.policy_description == state.current_question
+        )
+        card = (await session.exec(card_stmt)).first()
+        
+        if card:
+            label += f" (P{card.question_id})"
+        else:
+            # Fallback if card is somehow not found
+            q_summary = state.current_question[:30] + ("..." if len(state.current_question) > 30 else "")
+            label += f" ({q_summary})"
+    
+    await auto_save_game_state(session, label)
+
     return {
         "status": "success",
         "transaction_id": transaction_id,
@@ -979,9 +1114,13 @@ async def start_round4_bidding(session: AsyncSession = Depends(get_session)):
     active_res = await session.exec(active_stmt)
     unsold_offers = active_res.all()
 
-    # Find all completely unsold plots from Round 1 (no winner OR status is unsold)
+    # Find all completely unsold plots from Round 1 (no winner OR status is unsold or pending)
     unsold_plots_stmt = select(Plot).where(
-        or_(Plot.winner_team_id == None, Plot.status == PlotStatus.UNSOLD)
+        or_(
+            Plot.winner_team_id == None, 
+            Plot.status == PlotStatus.UNSOLD,
+            Plot.status == PlotStatus.PENDING
+        )
     )
     unsold_plots_res = await session.exec(unsold_plots_stmt)
     unsold_round1_plots = unsold_plots_res.all()
@@ -1010,9 +1149,16 @@ async def start_round4_bidding(session: AsyncSession = Depends(get_session)):
             # DO NOT deduct ownership or plots_won here.
             # Let the seller retain the plot until it is outbid.
             plot.status = PlotStatus.PENDING
-            plot.total_plot_price = float(offer.asking_price)
-            plot.round_adjustment = 0
-            plot.current_bid = None
+            
+            # Backup the true original value to purchase_price so we can restore it if unsold
+            if plot.current_bid is not None:
+                plot.purchase_price = plot.current_bid
+            else:
+                plot.purchase_price = plot.total_plot_price + plot.round_adjustment
+            
+            # Set the floor to the team's asking price
+            plot.current_bid = offer.asking_price
+            
             session.add(plot)
             await sio.emit("plot_update", serialize(plot.dict()), room="auction_room")
 
@@ -1027,10 +1173,10 @@ async def start_round4_bidding(session: AsyncSession = Depends(get_session)):
         offer.status = RebidOfferStatus.CANCELLED
         session.add(offer)
 
-    # Sort queues independently and combine
-    unsold_queue.sort()
+    # Sort queues independently and combine: selling plots first, then unsold
     rebid_queue.sort()
-    bid_queue = unsold_queue + rebid_queue
+    unsold_queue.sort()
+    bid_queue = rebid_queue + unsold_queue
     
     state.round4_bid_queue = json.dumps(bid_queue)
 
@@ -1166,3 +1312,287 @@ async def toggle_team_ban(
         await kick_banned_team(team.id)
 
     return {"status": "success", "team_id": team.id, "is_banned": team.is_banned}
+
+
+@router.post("/teams/{team_id}/disconnect")
+async def disconnect_team(
+    team_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+):
+    """Force disconnect a connected team's socket session.
+
+    This does NOT ban the team — they can reconnect freely.
+    It simply drops their current WebSocket connection.
+    """
+    stmt = select(Team).where(Team.id == team_id)
+    res = await session.exec(stmt)
+    team = res.first()
+
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    from socket_manager import force_disconnect_team
+
+    was_connected = await force_disconnect_team(team.id)
+
+    if not was_connected:
+        return {
+            "status": "not_connected",
+            "message": f"Team '{team.name}' was not connected.",
+        }
+
+    return {
+        "status": "success",
+        "message": f"Team '{team.name}' has been disconnected.",
+    }
+
+
+class SaveStateRequest(BaseModel):
+    """Request body for saving game state."""
+
+    label: str = ""
+
+
+@router.post("/save-state")
+async def save_game_state(
+    req: SaveStateRequest, session: AsyncSession = Depends(get_session)
+):
+    """Save a full snapshot of the current game state."""
+    # Gather all data
+    state = await get_auction_state(session)
+    teams = (await session.exec(select(Team))).all()
+    plots = (await session.exec(select(Plot))).all()
+    bids = (await session.exec(select(Bid))).all()
+    offers = (await session.exec(select(RebidOffer))).all()
+
+    snapshot = {
+        "auction_state": {
+            "current_plot_number": state.current_plot_number,
+            "status": state.status,
+            "current_round": state.current_round,
+            "current_question": state.current_question,
+            "rebid_phase_active": state.rebid_phase_active,
+            "round4_phase": state.round4_phase,
+            "round4_bid_queue": state.round4_bid_queue,
+            "current_policy_deltas": state.current_policy_deltas,
+        },
+        "teams": [
+            {
+                "id": str(t.id),
+                "name": t.name,
+                "passcode": t.passcode,
+                "budget": float(t.budget),
+                "spent": float(t.spent),
+                "plots_won": t.plots_won,
+                "is_banned": t.is_banned,
+            }
+            for t in teams
+        ],
+        "plots": [
+            {
+                "id": p.id,
+                "number": p.number,
+                "plot_type": p.plot_type,
+                "total_area": p.total_area,
+                "actual_area": p.actual_area,
+                "base_price": p.base_price,
+                "total_plot_price": p.total_plot_price,
+                "status": p.status,
+                "current_bid": float(p.current_bid) if p.current_bid else None,
+                "round_adjustment": float(p.round_adjustment),
+                "purchase_price": float(p.purchase_price) if p.purchase_price else None,
+                "winner_team_id": str(p.winner_team_id) if p.winner_team_id else None,
+            }
+            for p in plots
+        ],
+        "bids": [
+            {
+                "id": str(b.id),
+                "amount": float(b.amount),
+                "team_id": str(b.team_id),
+                "plot_id": b.plot_id,
+                "timestamp": b.timestamp.isoformat(),
+            }
+            for b in bids
+        ],
+        "rebid_offers": [
+            {
+                "id": str(o.id),
+                "plot_number": o.plot_number,
+                "offering_team_id": str(o.offering_team_id),
+                "asking_price": float(o.asking_price),
+                "status": o.status,
+                "timestamp": o.timestamp.isoformat(),
+            }
+            for o in offers
+        ],
+    }
+
+    label = req.label or f"Round {state.current_round} - Plot {state.current_plot_number}"
+    game_snapshot = GameSnapshot(
+        label=label,
+        snapshot_data=json.dumps(snapshot),
+    )
+    session.add(game_snapshot)
+    await session.commit()
+    await session.refresh(game_snapshot)
+
+    return {
+        "status": "success",
+        "snapshot_id": game_snapshot.id,
+        "label": game_snapshot.label,
+    }
+
+
+@router.get("/saved-states")
+async def list_saved_states(session: AsyncSession = Depends(get_session)):
+    """List all saved game snapshots (without the full data blob)."""
+    stmt = select(GameSnapshot).order_by(GameSnapshot.created_at.desc())
+    results = (await session.exec(stmt)).all()
+    return [
+        {
+            "id": s.id,
+            "label": s.label,
+            "created_at": s.created_at.isoformat(),
+        }
+        for s in results
+    ]
+
+
+@router.post("/restore-state/{snapshot_id}")
+async def restore_game_state(
+    snapshot_id: int, session: AsyncSession = Depends(get_session)
+):
+    """Restore the game to a previously saved snapshot.
+
+    This wipes all current bids, rebid offers, then restores teams,
+    plots, and auction state from the snapshot.
+    """
+    stmt = select(GameSnapshot).where(GameSnapshot.id == snapshot_id)
+    snap = (await session.exec(stmt)).first()
+    if not snap:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    data = json.loads(snap.snapshot_data)
+
+    # 1. Delete current bids and rebid offers
+    all_bids = (await session.exec(select(Bid))).all()
+    for b in all_bids:
+        await session.delete(b)
+    all_offers = (await session.exec(select(RebidOffer))).all()
+    for o in all_offers:
+        await session.delete(o)
+
+    # 2. Restore teams
+    for t_data in data["teams"]:
+        t_stmt = select(Team).where(Team.id == t_data["id"])
+        team = (await session.exec(t_stmt)).first()
+        if team:
+            team.spent = Decimal(str(t_data["spent"]))
+            team.plots_won = t_data["plots_won"]
+            team.is_banned = t_data.get("is_banned", False)
+            session.add(team)
+
+    # 3. Restore plots
+    for p_data in data["plots"]:
+        p_stmt = select(Plot).where(Plot.number == p_data["number"])
+        plot = (await session.exec(p_stmt)).first()
+        if plot:
+            plot.status = p_data["status"]
+            plot.current_bid = Decimal(str(p_data["current_bid"])) if p_data["current_bid"] else None
+            plot.round_adjustment = Decimal(str(p_data["round_adjustment"]))
+            plot.purchase_price = Decimal(str(p_data["purchase_price"])) if p_data.get("purchase_price") else None
+            plot.winner_team_id = p_data["winner_team_id"]
+            plot.total_plot_price = p_data["total_plot_price"]
+            session.add(plot)
+
+    # 4. Restore bids
+    from datetime import datetime as dt
+
+    for b_data in data.get("bids", []):
+        bid = Bid(
+            id=b_data["id"],
+            amount=Decimal(str(b_data["amount"])),
+            team_id=b_data["team_id"],
+            plot_id=b_data["plot_id"],
+            timestamp=dt.fromisoformat(b_data["timestamp"]),
+        )
+        session.add(bid)
+
+    # 5. Restore rebid offers
+    for o_data in data.get("rebid_offers", []):
+        offer = RebidOffer(
+            id=o_data["id"],
+            plot_number=o_data["plot_number"],
+            offering_team_id=o_data["offering_team_id"],
+            asking_price=Decimal(str(o_data["asking_price"])),
+            status=o_data["status"],
+            timestamp=dt.fromisoformat(o_data["timestamp"]),
+        )
+        session.add(offer)
+
+    # 6. Restore auction state
+    state = await get_auction_state(session)
+    s_data = data["auction_state"]
+    state.current_plot_number = s_data["current_plot_number"]
+    state.status = s_data["status"]
+    state.current_round = s_data["current_round"]
+    state.current_question = s_data.get("current_question")
+    state.rebid_phase_active = s_data.get("rebid_phase_active", False)
+    state.round4_phase = s_data.get("round4_phase")
+    state.round4_bid_queue = s_data.get("round4_bid_queue")
+    state.current_policy_deltas = s_data.get("current_policy_deltas")
+    session.add(state)
+
+    await session.commit()
+
+    # Broadcast full refresh to all clients
+    current_plot = None
+    cp_stmt = select(Plot).where(Plot.number == state.current_plot_number)
+    cp_res = await session.exec(cp_stmt)
+    current_plot = cp_res.first()
+
+    await sio.emit(
+        "auction_state_update",
+        serialize(
+            {
+                "status": state.status,
+                "current_plot_number": state.current_plot_number,
+                "current_round": state.current_round,
+                "current_plot": current_plot.dict() if current_plot else None,
+            }
+        ),
+        room="auction_room",
+    )
+
+    # Broadcast team updates
+    restored_teams = (await session.exec(select(Team))).all()
+    for team in restored_teams:
+        await sio.emit(
+            "team_update",
+            serialize(
+                {
+                    "team_id": team.id,
+                    "spent": float(team.spent),
+                    "budget": float(team.budget),
+                    "plots_won": team.plots_won,
+                }
+            ),
+            room="auction_room",
+        )
+
+    return {"status": "success", "message": f"Restored to snapshot: {snap.label}"}
+
+
+@router.delete("/saved-states/{snapshot_id}")
+async def delete_saved_state(
+    snapshot_id: int, session: AsyncSession = Depends(get_session)
+):
+    """Delete a saved game snapshot."""
+    stmt = select(GameSnapshot).where(GameSnapshot.id == snapshot_id)
+    snap = (await session.exec(stmt)).first()
+    if not snap:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    await session.delete(snap)
+    await session.commit()
+    return {"status": "success", "message": "Snapshot deleted"}
